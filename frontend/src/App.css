@@ -1,0 +1,462 @@
+/* 应用样式 */
+:root {
+  --primary-color: #4A90D9;
+  --header-height: 60px;
+  --sidebar-width: 280px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f5f6fa;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 头部 */
+.app-header {
+  height: var(--header-height);
+  background: linear-gradient(135deg, #4A90D9 0%, #357ABD 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+}
+
+.app-title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 主体 */
+.app-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* 侧边栏 */
+.app-sidebar {
+  width: var(--sidebar-width);
+  background: white;
+  border-right: 1px solid #e0e0e0;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* 主内容区 */
+.app-main {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 项目列表 */
+.project-list {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.project-list-header {
+  padding: 15px;
+  border-bottom: 1px solid #e0e0e0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.project-items {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.project-item {
+  padding: 12px 15px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background-color 0.2s;
+}
+
+.project-item:hover {
+  background-color: #f8f9fa;
+}
+
+.project-item.active {
+  background-color: #e8f4fd;
+  border-left: 3px solid var(--primary-color);
+}
+
+.project-item.all-tasks .project-color {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+
+.project-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.project-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.project-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-desc {
+  font-size: 0.8rem;
+  color: #6c757d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-actions {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.project-item:hover .project-actions {
+  opacity: 1;
+}
+
+/* 空状态 */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #6c757d;
+}
+
+.empty-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+.empty-state h3 {
+  margin: 0 0 0.5rem 0;
+  color: #333;
+}
+
+.empty-state p {
+  margin: 0 0 1.5rem 0;
+}
+
+/* 甘特图 */
+.gantt-chart {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: white;
+}
+
+.gantt-toolbar {
+  padding: 10px 15px;
+  border-bottom: 1px solid #e0e0e0;
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.gantt-view-modes {
+  display: flex;
+  gap: 5px;
+}
+
+.gantt-container {
+  flex: 1;
+  overflow: auto;
+}
+
+.gantt-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #f8f9fa;
+}
+
+.gantt-header-row {
+  display: flex;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.gantt-header-row.gantt-months {
+  font-weight: 600;
+}
+
+.gantt-header-row.gantt-days {
+  font-size: 0.85rem;
+}
+
+.gantt-header-cell {
+  padding: 8px 4px;
+  text-align: center;
+  border-right: 1px solid #e0e0e0;
+  white-space: nowrap;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.gantt-header-cell.weekend {
+  background-color: #f0f0f0;
+}
+
+.gantt-header-cell.today {
+  background-color: #fff3cd;
+  font-weight: bold;
+}
+
+.gantt-days-container {
+  display: flex;
+}
+
+.gantt-body {
+  flex: 1;
+  position: relative;
+  min-height: 200px;
+}
+
+.gantt-grid {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.gantt-grid-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-right: 1px solid #f0f0f0;
+}
+
+.gantt-grid-line.weekend {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.gantt-grid-line.today {
+  background-color: rgba(255, 193, 7, 0.1);
+}
+
+.gantt-today-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: #dc3545;
+  z-index: 5;
+}
+
+.gantt-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.gantt-task-name {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  background: white;
+  border-right: 1px solid #e0e0e0;
+  overflow: hidden;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.gantt-task-name:hover {
+  background: #f8f9fa;
+}
+
+.task-name-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-project-badge {
+  font-size: 0.7rem;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: white;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.task-progress-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.gantt-task-bar {
+  position: absolute;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+
+.gantt-task-bar:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.gantt-task-progress {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.gantt-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 1;
+}
+
+.gantt-resize-handle.start {
+  left: 0;
+}
+
+.gantt-resize-handle.end {
+  right: 0;
+}
+
+.gantt-resize-handle:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* 颜色选择器 */
+.color-picker {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.color-option {
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 0.2s, border-color 0.2s;
+}
+
+.color-option:hover {
+  transform: scale(1.1);
+}
+
+.color-option.selected {
+  border-color: #333;
+}
+
+/* 弹窗 */
+.modal.show {
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.modal-dialog {
+  animation: slideIn 0.2s ease;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(-20px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a1a1a1;
+}
