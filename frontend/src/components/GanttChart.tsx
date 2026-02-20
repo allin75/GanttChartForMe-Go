@@ -17,6 +17,9 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
   const [scrollOffset, setScrollOffset] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState<{ taskId: string; type: 'move' | 'start' | 'end'; startX: number; originalStart: Date; originalEnd: Date } | null>(null);
+  const [hoveredTask, setHoveredTask] = useState<Task | null>(null);
+  const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
+  const lastClickTimeRef = useRef<{ taskId: string; time: number } | null>(null);
 
   // 计算日期范围
   const getDateRange = useCallback(() => {
@@ -105,6 +108,12 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
     const deltaX = e.clientX - dragging.startX;
     const daysDelta = Math.round(deltaX / columnWidth);
 
+    // 如果几乎没有移动，不更新
+    if (daysDelta === 0) {
+      setDragging(null);
+      return;
+    }
+
     let newStart = dragging.originalStart;
     let newEnd = dragging.originalEnd;
 
@@ -147,6 +156,45 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
   const today = new Date();
   const todayOffset = differenceInDays(today, rangeStart);
   const showTodayLine = todayOffset >= 0 && todayOffset < days.length;
+
+  // 处理任务条的鼠标进入
+  const handleTaskBarMouseEnter = (e: React.MouseEvent, task: Task) => {
+    if (dragging) return;
+    setHoveredTask(task);
+    setTooltipPosition({ x: e.clientX, y: e.clientY });
+  };
+
+  // 处理任务条的鼠标移动
+  const handleTaskBarMouseMove = (e: React.MouseEvent) => {
+    if (dragging) return;
+    setTooltipPosition({ x: e.clientX, y: e.clientY });
+  };
+
+  // 处理任务条的鼠标离开
+  const handleTaskBarMouseLeave = () => {
+    setHoveredTask(null);
+  };
+
+  // 处理任务条点击（区分单击和双击）
+  const handleTaskBarClick = (e: React.MouseEvent, task: Task) => {
+    // 如果刚刚完成拖拽，忽略这次点击
+    if (dragging) return;
+
+    const now = Date.now();
+    const lastClick = lastClickTimeRef.current;
+
+    // 检查是否是双击（同一任务，间隔小于300ms）
+    if (lastClick && lastClick.taskId === task.id && now - lastClick.time < 300) {
+      // 双击：打开编辑框
+      e.preventDefault();
+      e.stopPropagation();
+      onTaskClick(task);
+      lastClickTimeRef.current = null;
+    } else {
+      // 单击：只记录时间，不执行任何操作
+      lastClickTimeRef.current = { taskId: task.id, time: now };
+    }
+  };
 
   // 渲染日期头部
   const renderDateHeader = () => {
@@ -271,7 +319,10 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
                 <div 
                   className="gantt-task-name"
                   style={{ width: taskNameWidth }}
-                  onClick={() => onTaskClick(task)}
+                  onDoubleClick={() => onTaskClick(task)}
+                  onMouseEnter={(e) => handleTaskBarMouseEnter(e, task)}
+                  onMouseMove={handleTaskBarMouseMove}
+                  onMouseLeave={handleTaskBarMouseLeave}
                 >
                   <span className="task-progress-dot" style={{ 
                     background: task.progress >= 100 ? '#28a745' : task.progress > 0 ? '#ffc107' : '#6c757d'
@@ -295,7 +346,10 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
                     backgroundColor: task.color,
                     top: (rowHeight - 24) / 2,
                   }}
-                  onClick={() => onTaskClick(task)}
+                  onClick={(e) => handleTaskBarClick(e, task)}
+                  onMouseEnter={(e) => handleTaskBarMouseEnter(e, task)}
+                  onMouseMove={handleTaskBarMouseMove}
+                  onMouseLeave={handleTaskBarMouseLeave}
                 >
                   {/* 进度 */}
                   <div 
@@ -318,6 +372,40 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
           })}
         </div>
       </div>
+
+      {/* 任务信息提示框 */}
+      {hoveredTask && !dragging && (
+        <div 
+          className="task-tooltip"
+          style={{
+            left: tooltipPosition.x + 10,
+            top: tooltipPosition.y + 10,
+          }}
+        >
+          <div className="tooltip-title">{hoveredTask.name}</div>
+          <div className="tooltip-row">
+            <span className="tooltip-label">时间：</span>
+            <span>{format(new Date(hoveredTask.start_date), 'yyyy-MM-dd')} ~ {format(new Date(hoveredTask.end_date), 'yyyy-MM-dd')}</span>
+          </div>
+          <div className="tooltip-row">
+            <span className="tooltip-label">进度：</span>
+            <span>{hoveredTask.progress}%</span>
+          </div>
+          {hoveredTask.description && (
+            <div className="tooltip-row">
+              <span className="tooltip-label">描述：</span>
+              <span>{hoveredTask.description}</span>
+            </div>
+          )}
+          {showProjectName && hoveredTask.project_name && (
+            <div className="tooltip-row">
+              <span className="tooltip-label">项目：</span>
+              <span>{hoveredTask.project_name}</span>
+            </div>
+          )}
+          <div className="tooltip-hint">双击编辑</div>
+        </div>
+      )}
     </div>
   );
 };
