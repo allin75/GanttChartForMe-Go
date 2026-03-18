@@ -1,27 +1,31 @@
-import React, { useState, useEffect } from 'react';
-import { Task, Project, CreateTaskDto, UpdateTaskDto } from '../types';
-import { tasksApi } from '../api';
+import React, { useEffect, useState } from 'react';
 import { format, addDays } from 'date-fns';
+import { CreateTaskDto, Project, Task, UpdateTaskDto } from '../types';
+import { tasksApi } from '../api';
 
 interface TaskModalProps {
   task: Task | null;
   project: Project;
   onClose: () => void;
-  onSave: () => void;
+  onSave: () => Promise<void>;
 }
 
+const TASK_COLORS = ['#4A90D9', '#5CB85C', '#F0AD4E', '#D9534F', '#9B59B6', '#1ABC9C', '#34495E', '#E74C3C'];
+
+const buildDefaultTaskForm = (project: Project): CreateTaskDto => ({
+  project_id: project.id,
+  name: '',
+  description: '',
+  start_date: format(new Date(), 'yyyy-MM-dd'),
+  end_date: format(addDays(new Date(), 7), 'yyyy-MM-dd'),
+  progress: 0,
+  color: project.color,
+  parent_id: undefined,
+  dependencies: [],
+});
+
 const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave }) => {
-  const [formData, setFormData] = useState<CreateTaskDto | UpdateTaskDto>({
-    project_id: project.id,
-    name: '',
-    description: '',
-    start_date: format(new Date(), 'yyyy-MM-dd'),
-    end_date: format(addDays(new Date(), 7), 'yyyy-MM-dd'),
-    progress: 0,
-    color: project.color,
-    parent_id: undefined,
-    dependencies: [],
-  });
+  const [formData, setFormData] = useState<CreateTaskDto | UpdateTaskDto>(buildDefaultTaskForm(project));
 
   useEffect(() => {
     if (task) {
@@ -35,20 +39,11 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
         parent_id: task.parent_id || undefined,
         dependencies: task.dependencies,
       });
-    } else {
-      setFormData({
-        project_id: project.id,
-        name: '',
-        description: '',
-        start_date: format(new Date(), 'yyyy-MM-dd'),
-        end_date: format(addDays(new Date(), 7), 'yyyy-MM-dd'),
-        progress: 0,
-        color: project.color,
-        parent_id: undefined,
-        dependencies: [],
-      });
+      return;
     }
-  }, [task, project]);
+
+    setFormData(buildDefaultTaskForm(project));
+  }, [project, task]);
 
   const handleSubmit = async () => {
     try {
@@ -57,7 +52,8 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
       } else {
         await tasksApi.create(formData as CreateTaskDto);
       }
-      onSave();
+
+      await onSave();
       onClose();
     } catch (error) {
       console.error('Failed to save task:', error);
@@ -65,18 +61,27 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
   };
 
   const handleDelete = async () => {
-    if (!task) return;
-    if (!window.confirm('确定要删除这个任务吗？')) return;
+    if (!task) {
+      return;
+    }
+
+    if (!window.confirm('确定要删除这个任务吗？')) {
+      return;
+    }
+
     try {
       await tasksApi.delete(task.id);
-      onSave();
+      await onSave();
       onClose();
     } catch (error) {
       console.error('Failed to delete task:', error);
     }
   };
 
-  const colors = ['#4A90D9', '#5CB85C', '#F0AD4E', '#D9534F', '#9B59B6', '#1ABC9C', '#34495E', '#E74C3C'];
+  const isInvalidDateRange =
+    Boolean(formData.start_date) &&
+    Boolean(formData.end_date) &&
+    (formData.start_date as string) > (formData.end_date as string);
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
@@ -89,58 +94,63 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
           <div className="modal-body">
             <div className="mb-3">
               <label className="form-label">任务名称 *</label>
-              <input 
-                type="text" 
-                className="form-control" 
+              <input
+                type="text"
+                className="form-control"
                 value={formData.name || ''}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                onChange={(event) => setFormData({ ...formData, name: event.target.value })}
               />
             </div>
             <div className="mb-3">
               <label className="form-label">描述</label>
-              <textarea 
-                className="form-control" 
+              <textarea
+                className="form-control"
                 rows={2}
                 value={formData.description || ''}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                onChange={(event) => setFormData({ ...formData, description: event.target.value })}
               />
             </div>
             <div className="row mb-3">
               <div className="col">
                 <label className="form-label">开始日期 *</label>
-                <input 
-                  type="date" 
-                  className="form-control" 
+                <input
+                  type="date"
+                  className="form-control"
                   value={formData.start_date || ''}
-                  onChange={(e) => setFormData({ ...formData, start_date: e.target.value })}
+                  onChange={(event) => setFormData({ ...formData, start_date: event.target.value })}
                 />
               </div>
               <div className="col">
                 <label className="form-label">结束日期 *</label>
-                <input 
-                  type="date" 
-                  className="form-control" 
+                <input
+                  type="date"
+                  className="form-control"
                   value={formData.end_date || ''}
-                  onChange={(e) => setFormData({ ...formData, end_date: e.target.value })}
+                  onChange={(event) => setFormData({ ...formData, end_date: event.target.value })}
                 />
               </div>
             </div>
+            {isInvalidDateRange && (
+              <div className="alert alert-warning py-2">
+                结束日期不能早于开始日期。
+              </div>
+            )}
             <div className="mb-3">
               <label className="form-label">进度: {formData.progress || 0}%</label>
-              <input 
-                type="range" 
-                className="form-range" 
+              <input
+                type="range"
+                className="form-range"
                 min={0}
                 max={100}
                 value={formData.progress || 0}
-                onChange={(e) => setFormData({ ...formData, progress: parseInt(e.target.value) })}
+                onChange={(event) => setFormData({ ...formData, progress: parseInt(event.target.value, 10) })}
               />
             </div>
             <div className="mb-3">
               <label className="form-label">颜色</label>
               <div className="color-picker">
-                {colors.map(color => (
-                  <div 
+                {TASK_COLORS.map((color) => (
+                  <div
                     key={color}
                     className={`color-option ${formData.color === color ? 'selected' : ''}`}
                     style={{ backgroundColor: color }}
@@ -157,11 +167,11 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
               </button>
             )}
             <button type="button" className="btn btn-secondary" onClick={onClose}>取消</button>
-            <button 
-              type="button" 
+            <button
+              type="button"
               className="btn btn-primary"
               onClick={handleSubmit}
-              disabled={!formData.name || !formData.start_date || !formData.end_date}
+              disabled={!formData.name?.trim() || !formData.start_date || !formData.end_date || isInvalidDateRange}
             >
               {task ? '保存' : '创建'}
             </button>
