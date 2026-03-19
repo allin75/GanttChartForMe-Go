@@ -71,6 +71,49 @@ go build -o server .
 ./server
 ```
 
+## Windows 服务部署（固定部署机：192.168.123.97）
+
+仓库内置了 Windows 服务部署脚本，默认固定部署到：`C:\Services\GanttChartForMe-Go`
+
+### 首次安装
+
+先构建产物：
+
+```powershell
+cd backend
+go build -o server.exe .
+
+cd ..\frontend
+npm install
+npm run build
+```
+
+然后在目标 Windows 机器上执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\install-service.ps1
+```
+
+默认服务名：`GanttChartForMe-Go`
+
+默认访问地址：`http://192.168.123.97:3001/`
+
+### 后续更新
+
+每次代码更新后重新构建，再执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\update-service.ps1
+```
+
+### 目录约定
+
+- `C:\Services\GanttChartForMe-Go\current`：当前运行版本
+- `C:\Services\GanttChartForMe-Go\current\frontend`：前端静态资源
+- `C:\Services\GanttChartForMe-Go\data\gantt.db`：SQLite 数据文件
+- `C:\Services\GanttChartForMe-Go\logs`：服务日志
+- `C:\Services\GanttChartForMe-Go\winsw`：WinSW 服务包装器与配置
+
 ## 环境变量
 
 - `PORT`：服务端口，默认 `3001`

@@ -58,3 +58,12 @@ export interface UpdateTaskDto {
   parent_id?: string;
   dependencies?: string[];
 }
+
+export interface AuthStatus {
+  setup_complete: boolean;
+  authenticated: boolean;
+}
+
+export interface AuthPayload {
+  secret: string;
+}

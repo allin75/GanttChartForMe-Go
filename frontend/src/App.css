@@ -19,6 +19,58 @@ body {
   background-color: #f5f6fa;
 }
 
+#root {
+  min-height: 100vh;
+}
+
+.auth-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(74, 144, 217, 0.18), transparent 32%),
+    linear-gradient(135deg, #f6f9fc 0%, #eef3f9 100%);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 520px;
+  border-radius: 20px;
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.auth-brand-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  background: linear-gradient(135deg, #4A90D9 0%, #357ABD 100%);
+  color: white;
+  box-shadow: 0 12px 24px rgba(53, 122, 189, 0.2);
+}
+
+.auth-title {
+  margin: 0 0 4px;
+  font-size: 1.5rem;
+  color: #1f2d3d;
+}
+
+.auth-subtitle,
+.auth-hint {
+  color: #6c757d;
+  line-height: 1.6;
+}
+
 .app {
   display: flex;
   flex-direction: column;

@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +22,11 @@ import (
 )
 
 const defaultColor = "#4A90D9"
+
+const (
+	sessionCookieName = "gantt_session"
+	sessionDuration   = 30 * 24 * time.Hour
+)
 
 type Project struct {
 	ID          string `json:"id"`
@@ -72,6 +79,29 @@ type taskPayload struct {
 type dataFile struct {
 	Projects []Project `json:"projects"`
 	Tasks    []Task    `json:"tasks"`
+}
+
+type authPayload struct {
+	Secret string `json:"secret"`
+}
+
+type authStatusResponse struct {
+	SetupComplete bool `json:"setup_complete"`
+	Authenticated bool `json:"authenticated"`
+}
+
+type authConfig struct {
+	SecretHash string
+	Salt       string
+	CreatedAt  string
+	UpdatedAt  string
+}
+
+type authSession struct {
+	ID        string
+	ExpiresAt string
+	CreatedAt string
+	UpdatedAt string
 }
 
 type store struct {
@@ -142,6 +172,20 @@ func (s *store) initSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_projects_created_at ON projects(created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_start_date ON tasks(start_date, created_at);`,
+		`CREATE TABLE IF NOT EXISTS auth_config (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			secret_hash TEXT NOT NULL,
+			salt TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS auth_sessions (
+			id TEXT PRIMARY KEY,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);`,
 	}
 
 	for _, statement := range statements {
@@ -441,6 +485,156 @@ func (s *store) deleteTask(id string) error {
 	return nil
 }
 
+func (s *store) getAuthConfig() (authConfig, bool, error) {
+	var config authConfig
+	err := s.db.QueryRow(`
+		SELECT secret_hash, salt, created_at, updated_at
+		FROM auth_config
+		WHERE id = 1
+	`).Scan(&config.SecretHash, &config.Salt, &config.CreatedAt, &config.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return authConfig{}, false, nil
+		}
+		return authConfig{}, false, err
+	}
+	return config, true, nil
+}
+
+func (s *store) isAuthConfigured() (bool, error) {
+	_, ok, err := s.getAuthConfig()
+	return ok, err
+}
+
+func (s *store) createInitialSecret(secret string) error {
+	trimmed := strings.TrimSpace(secret)
+	if trimmed == "" {
+		return errors.New("secret is required")
+	}
+
+	salt, err := randomHex(16)
+	if err != nil {
+		return err
+	}
+	hash := hashSecret(trimmed, salt)
+	now := nowISO()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.withTx(func(tx *sql.Tx) error {
+		var count int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM auth_config WHERE id = 1`).Scan(&count); err != nil {
+			return err
+		}
+		if count > 0 {
+			return errors.New("secret already configured")
+		}
+
+		_, err := tx.Exec(`
+			INSERT INTO auth_config (id, secret_hash, salt, created_at, updated_at)
+			VALUES (1, ?, ?, ?, ?)
+		`, hash, salt, now, now)
+		return err
+	})
+}
+
+func (s *store) verifySecret(secret string) (bool, error) {
+	trimmed := strings.TrimSpace(secret)
+	if trimmed == "" {
+		return false, errors.New("secret is required")
+	}
+
+	config, ok, err := s.getAuthConfig()
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, errors.New("secret is not configured")
+	}
+
+	expected := hashSecret(trimmed, config.Salt)
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(config.SecretHash)) == 1 {
+		return true, nil
+	}
+	return false, nil
+}
+
+func (s *store) createSession() (authSession, error) {
+	sessionID, err := randomHex(32)
+	if err != nil {
+		return authSession{}, err
+	}
+	now := time.Now().UTC()
+	session := authSession{
+		ID:        sessionID,
+		ExpiresAt: now.Add(sessionDuration).Format(time.RFC3339),
+		CreatedAt: now.Format(time.RFC3339),
+		UpdatedAt: now.Format(time.RFC3339),
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err = s.db.Exec(`
+		INSERT INTO auth_sessions (id, expires_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+	`, session.ID, session.ExpiresAt, session.CreatedAt, session.UpdatedAt)
+	if err != nil {
+		return authSession{}, err
+	}
+
+	return session, nil
+}
+
+func (s *store) getSession(id string) (authSession, bool, error) {
+	var session authSession
+	err := s.db.QueryRow(`
+		SELECT id, expires_at, created_at, updated_at
+		FROM auth_sessions
+		WHERE id = ?
+	`, id).Scan(&session.ID, &session.ExpiresAt, &session.CreatedAt, &session.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return authSession{}, false, nil
+		}
+		return authSession{}, false, err
+	}
+	return session, true, nil
+}
+
+func (s *store) touchSession(id string, expiresAt string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`
+		UPDATE auth_sessions
+		SET expires_at = ?, updated_at = ?
+		WHERE id = ?
+	`, expiresAt, nowISO(), id)
+	return err
+}
+
+func (s *store) deleteSession(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`DELETE FROM auth_sessions WHERE id = ?`, id)
+	return err
+}
+
+func (s *store) deleteExpiredSessions() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`DELETE FROM auth_sessions WHERE expires_at <= ?`, nowISO())
+	return err
+}
+
 type server struct {
 	store       *store
 	frontendDir string
@@ -472,6 +666,10 @@ func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("/api/auth/setup", s.handleAuthSetup)
+	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProjectByID)
 	mux.HandleFunc("/api/tasks/all", s.handleAllTasks)
@@ -489,6 +687,17 @@ func (s *server) routes() http.Handler {
 		}
 
 		if strings.HasPrefix(r.URL.Path, "/api/") {
+			if s.isProtectedAPIPath(r.URL.Path) {
+				authenticated, err := s.requireAuth(w, r)
+				if err != nil {
+					log.Printf("auth check failed: %v", err)
+					writeError(w, http.StatusInternalServerError, "failed to verify session")
+					return
+				}
+				if !authenticated {
+					return
+				}
+			}
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -512,6 +721,221 @@ func (s *server) routes() http.Handler {
 
 		http.NotFound(w, r)
 	})
+}
+
+func (s *server) isProtectedAPIPath(path string) bool {
+	if !strings.HasPrefix(path, "/api/") {
+		return false
+	}
+
+	publicPaths := []string{
+		"/api/health",
+		"/api/auth/status",
+		"/api/auth/setup",
+		"/api/auth/login",
+		"/api/auth/logout",
+	}
+	for _, publicPath := range publicPaths {
+		if path == publicPath {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *server) requireAuth(w http.ResponseWriter, r *http.Request) (bool, error) {
+	if err := s.store.deleteExpiredSessions(); err != nil {
+		return false, err
+	}
+
+	sessionID := s.sessionIDFromRequest(r)
+	if sessionID == "" {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return false, nil
+	}
+
+	session, ok, err := s.store.getSession(sessionID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		s.clearSessionCookie(w)
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return false, nil
+	}
+
+	expiresAt, err := time.Parse(time.RFC3339, session.ExpiresAt)
+	if err != nil {
+		_ = s.store.deleteSession(session.ID)
+		s.clearSessionCookie(w)
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return false, nil
+	}
+	if time.Now().UTC().After(expiresAt) {
+		_ = s.store.deleteSession(session.ID)
+		s.clearSessionCookie(w)
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return false, nil
+	}
+
+	newExpiry := time.Now().UTC().Add(sessionDuration).Format(time.RFC3339)
+	if err := s.store.touchSession(session.ID, newExpiry); err != nil {
+		return false, err
+	}
+	s.setSessionCookie(w, session.ID, newExpiry)
+
+	return true, nil
+}
+
+func (s *server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	configured, err := s.store.isAuthConfigured()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load auth status")
+		return
+	}
+
+	authenticated := false
+	if configured {
+		if err := s.store.deleteExpiredSessions(); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load auth status")
+			return
+		}
+
+		sessionID := s.sessionIDFromRequest(r)
+		if sessionID != "" {
+			session, ok, err := s.store.getSession(sessionID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load auth status")
+				return
+			}
+			if ok {
+				expiresAt, parseErr := time.Parse(time.RFC3339, session.ExpiresAt)
+				if parseErr == nil && time.Now().UTC().Before(expiresAt) {
+					authenticated = true
+				} else {
+					_ = s.store.deleteSession(session.ID)
+					s.clearSessionCookie(w)
+				}
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, authStatusResponse{
+		SetupComplete: configured,
+		Authenticated: authenticated,
+	})
+}
+
+func (s *server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	configured, err := s.store.isAuthConfigured()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load auth config")
+		return
+	}
+	if configured {
+		writeError(w, http.StatusConflict, "secret already configured")
+		return
+	}
+
+	var payload authPayload
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(payload.Secret) == "" {
+		writeError(w, http.StatusBadRequest, "secret is required")
+		return
+	}
+
+	if err := s.store.createInitialSecret(payload.Secret); err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "secret already configured" {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+
+	session, err := s.store.createSession()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
+	s.setSessionCookie(w, session.ID, session.ExpiresAt)
+
+	writeJSON(w, http.StatusCreated, authStatusResponse{
+		SetupComplete: true,
+		Authenticated: true,
+	})
+}
+
+func (s *server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	configured, err := s.store.isAuthConfigured()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load auth config")
+		return
+	}
+	if !configured {
+		writeError(w, http.StatusConflict, "secret is not configured")
+		return
+	}
+
+	var payload authPayload
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	valid, err := s.store.verifySecret(payload.Secret)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !valid {
+		writeError(w, http.StatusUnauthorized, "invalid secret")
+		return
+	}
+
+	session, err := s.store.createSession()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
+	s.setSessionCookie(w, session.ID, session.ExpiresAt)
+
+	writeJSON(w, http.StatusOK, authStatusResponse{
+		SetupComplete: true,
+		Authenticated: true,
+	})
+}
+
+func (s *server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	if sessionID := s.sessionIDFromRequest(r); sessionID != "" {
+		_ = s.store.deleteSession(sessionID)
+	}
+	s.clearSessionCookie(w)
+
+	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -984,9 +1408,49 @@ func decodeJSON(r *http.Request, target any) error {
 }
 
 func setCORSHeaders(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", envOr("CORS_ALLOW_ORIGIN", "http://localhost:3000"))
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+}
+
+func (s *server) sessionIDFromRequest(r *http.Request) string {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cookie.Value)
+}
+
+func (s *server) setSessionCookie(w http.ResponseWriter, sessionID string, expiresAt string) {
+	expires, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		expires = time.Now().UTC().Add(sessionDuration)
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    sessionID,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   false,
+		Expires:  expires,
+		MaxAge:   int(time.Until(expires).Seconds()),
+	})
+}
+
+func (s *server) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   false,
+		Expires:  time.Unix(0, 0).UTC(),
+		MaxAge:   -1,
+	})
 }
 
 func nowISO() string {
@@ -1054,4 +1518,17 @@ func newUUID() string {
 	buf[23] = '-'
 	hex.Encode(buf[24:36], bytes[10:16])
 	return string(buf)
+}
+
+func randomHex(size int) (string, error) {
+	bytes := make([]byte, size)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+func hashSecret(secret string, salt string) string {
+	sum := sha256.Sum256([]byte(salt + ":" + secret))
+	return hex.EncodeToString(sum[:])
 }

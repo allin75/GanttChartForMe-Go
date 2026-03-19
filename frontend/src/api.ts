@@ -1,9 +1,28 @@
-import { Project, Task, CreateProjectDto, UpdateProjectDto, CreateTaskDto, UpdateTaskDto } from './types';
+import {
+  Project,
+  Task,
+  CreateProjectDto,
+  UpdateProjectDto,
+  CreateTaskDto,
+  UpdateTaskDto,
+  AuthPayload,
+  AuthStatus,
+} from './types';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${url}`, {
+    credentials: 'include',
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -13,7 +32,7 @@ async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || `HTTP ${response.status}`);
+    throw new ApiError(response.status, error.error || `HTTP ${response.status}`);
   }
 
   if (response.status === 204) {
@@ -55,5 +74,20 @@ export const tasksApi = {
   }),
   delete: (id: string) => fetchApi<void>(`/api/tasks/${id}`, {
     method: 'DELETE',
+  }),
+};
+
+export const authApi = {
+  getStatus: () => fetchApi<AuthStatus>('/api/auth/status'),
+  setup: (data: AuthPayload) => fetchApi<AuthStatus>('/api/auth/setup', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  login: (data: AuthPayload) => fetchApi<AuthStatus>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  logout: () => fetchApi<{ authenticated: boolean }>('/api/auth/logout', {
+    method: 'POST',
   }),
 };
