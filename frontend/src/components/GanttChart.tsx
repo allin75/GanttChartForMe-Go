@@ -30,6 +30,16 @@ interface DragState {
   originalEnd: Date;
 }
 
+interface DragPreview {
+  taskId: string;
+  type: DragType;
+  startDate: Date;
+  endDate: Date;
+  daysDelta: number;
+  left: number;
+  width: number;
+}
+
 const VIEW_MODE_LABELS: Record<ViewMode, string> = {
   day: '日',
   week: '周',
@@ -39,6 +49,7 @@ const VIEW_MODE_LABELS: Record<ViewMode, string> = {
 const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClick, showProjectName = false }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('week');
   const [dragging, setDragging] = useState<DragState | null>(null);
+  const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
   const [hoveredTask, setHoveredTask] = useState<Task | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const lastClickTimeRef = useRef<{ taskId: string; time: number } | null>(null);
@@ -117,12 +128,38 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
     const deltaX = event.clientX - dragging.startX;
     const daysDelta = Math.round(deltaX / columnWidth);
 
-    if (daysDelta === 0) {
-      return;
+    let newStart = dragging.originalStart;
+    let newEnd = dragging.originalEnd;
+
+    if (dragging.type === 'move') {
+      newStart = addDays(dragging.originalStart, daysDelta);
+      newEnd = addDays(dragging.originalEnd, daysDelta);
+    } else if (dragging.type === 'start') {
+      newStart = addDays(dragging.originalStart, daysDelta);
+      if (newStart > newEnd) {
+        newStart = newEnd;
+      }
+    } else {
+      newEnd = addDays(dragging.originalEnd, daysDelta);
+      if (newEnd < newStart) {
+        newEnd = newStart;
+      }
     }
 
+    const previewStartOffset = differenceInDays(newStart, rangeStart);
+    const previewDuration = differenceInDays(newEnd, newStart) + 1;
+
     setTooltipPosition({ x: event.clientX, y: event.clientY });
-  }, [columnWidth, dragging]);
+    setDragPreview({
+      taskId: dragging.taskId,
+      type: dragging.type,
+      startDate: newStart,
+      endDate: newEnd,
+      daysDelta,
+      left: taskNameWidth + previewStartOffset * columnWidth,
+      width: Math.max(previewDuration * columnWidth - 4, 12),
+    });
+  }, [columnWidth, dragging, rangeStart]);
 
   const handleMouseUp = useCallback((event: MouseEvent) => {
     if (!dragging) {
@@ -134,6 +171,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
 
     if (daysDelta === 0) {
       setDragging(null);
+      setDragPreview(null);
       return;
     }
 
@@ -161,6 +199,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
     });
 
     setDragging(null);
+    setDragPreview(null);
   }, [columnWidth, dragging, onTaskUpdate]);
 
   useEffect(() => {
@@ -176,6 +215,12 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
       window.removeEventListener('mouseup', handleMouseUp);
     };
   }, [dragging, handleMouseMove, handleMouseUp]);
+
+  useEffect(() => {
+    if (!dragging) {
+      setDragPreview(null);
+    }
+  }, [dragging]);
 
   const handleTaskBarMouseEnter = (event: React.MouseEvent, task: Task) => {
     if (dragging) {
@@ -313,6 +358,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
 
           {tasks.map((task, index) => {
             const { left, width } = getTaskPosition(task);
+            const isDraggingTask = dragPreview?.taskId === task.id;
 
             return (
               <div
@@ -344,8 +390,20 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
                   </span>
                 </div>
 
+                {isDraggingTask && dragPreview && (
+                  <div
+                    className="gantt-task-bar gantt-task-bar-preview"
+                    style={{
+                      left: dragPreview.left,
+                      width: dragPreview.width,
+                      backgroundColor: task.color,
+                      top: (rowHeight - 24) / 2,
+                    }}
+                  />
+                )}
+
                 <div
-                  className="gantt-task-bar"
+                  className={`gantt-task-bar ${isDraggingTask ? 'gantt-task-bar-dragging' : ''}`}
                   style={{
                     left,
                     width,
@@ -376,6 +434,37 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
           })}
         </div>
       </div>
+
+      {dragging && dragPreview && (
+        <div
+          className="task-tooltip drag-preview-tooltip"
+          style={{
+            left: tooltipPosition.x + 12,
+            top: tooltipPosition.y + 12,
+          }}
+        >
+          <div className="tooltip-title">实时落点</div>
+          <div className="tooltip-row">
+            <span className="tooltip-label">开始:</span>
+            <span>{format(dragPreview.startDate, 'yyyy-MM-dd')}</span>
+          </div>
+          <div className="tooltip-row">
+            <span className="tooltip-label">结束:</span>
+            <span>{format(dragPreview.endDate, 'yyyy-MM-dd')}</span>
+          </div>
+          <div className="tooltip-row">
+            <span className="tooltip-label">位移:</span>
+            <span>
+              {dragPreview.daysDelta === 0
+                ? '未移动'
+                : `${dragPreview.daysDelta > 0 ? '+' : ''}${dragPreview.daysDelta} 天`}
+            </span>
+          </div>
+          <div className="tooltip-hint">
+            {dragPreview.type === 'move' ? '拖动整体任务条' : dragPreview.type === 'start' ? '调整开始时间' : '调整结束时间'}
+          </div>
+        </div>
+      )}
 
       {hoveredTask && !dragging && (
         <div

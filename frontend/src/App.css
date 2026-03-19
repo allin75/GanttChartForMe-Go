@@ -370,6 +370,17 @@ body {
   background: rgba(0, 0, 0, 0.15);
 }
 
+.gantt-task-bar-preview {
+  opacity: 0.35;
+  border: 2px dashed rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 1px rgba(74, 144, 217, 0.25);
+  pointer-events: none;
+}
+
+.gantt-task-bar-dragging {
+  opacity: 0.55;
+}
+
 .gantt-resize-handle {
   position: absolute;
   top: 0;
@@ -504,4 +515,13 @@ body {
   padding-top: 6px;
   border-top: 1px solid #eee;
   text-align: right;
+}
+
+.drag-preview-tooltip {
+  border-color: rgba(74, 144, 217, 0.35);
+  box-shadow: 0 8px 24px rgba(74, 144, 217, 0.18);
+}
+
+.drag-preview-tooltip .tooltip-title {
+  color: #2f6fb0;
 }
