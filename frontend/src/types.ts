@@ -24,6 +24,18 @@ export interface Task {
   project_color?: string;
 }
 
+export interface ProjectAttachment {
+  id: string;
+  project_id: string;
+  original_name: string;
+  stored_name: string;
+  relative_path: string;
+  mime_type: string;
+  size_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CreateProjectDto {
   name: string;
   description?: string;

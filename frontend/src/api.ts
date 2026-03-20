@@ -1,6 +1,7 @@
 import {
   Project,
   Task,
+  ProjectAttachment,
   CreateProjectDto,
   UpdateProjectDto,
   CreateTaskDto,
@@ -31,6 +32,24 @@ async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
       'Content-Type': 'application/json',
       ...options?.headers,
     },
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+    throw new ApiError(response.status, error.error || `HTTP ${response.status}`);
+  }
+
+  if (response.status === 204) {
+    return {} as T;
+  }
+
+  return response.json();
+}
+
+async function fetchFormData<T>(url: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${url}`, {
+    credentials: 'include',
+    ...options,
   });
 
   if (!response.ok) {
@@ -105,6 +124,23 @@ export const wechatApi = {
     body: JSON.stringify(data),
   }),
   removeBinding: () => fetchApi<WeChatBindingStatus>('/api/account/bindings/wechat', {
+    method: 'DELETE',
+  }),
+};
+
+export const projectAttachmentsApi = {
+  list: (projectId: string) => fetchApi<ProjectAttachment[]>(`/api/project-attachments/${projectId}/list`),
+  upload: (projectId: string, files: File[]) => {
+    const formData = new FormData();
+    files.forEach((file) => formData.append('files', file));
+
+    return fetchFormData<ProjectAttachment[]>(`/api/project-attachments/${projectId}/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+  },
+  downloadUrl: (projectId: string, attachmentId: string) => `${API_BASE}/api/project-attachments/${projectId}/download/${attachmentId}`,
+  remove: (projectId: string, attachmentId: string) => fetchApi<void>(`/api/project-attachments/${projectId}/delete/${attachmentId}`, {
     method: 'DELETE',
   }),
 };

@@ -141,6 +141,21 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
     };
   };
 
+  const getWeekendSegments = (task: Task) => {
+    const startDate = new Date(task.start_date);
+    const endDate = new Date(task.end_date);
+    const startOffset = differenceInDays(startDate, rangeStart);
+
+    return days
+      .map((day, index) => ({ day, index }))
+      .filter(({ day }) => isWeekend(day) && day >= startDate && day <= endDate)
+      .map(({ day, index }) => ({
+        key: `${task.id}-${day.toISOString()}`,
+        left: index * columnWidth - startOffset * columnWidth,
+        width: columnWidth,
+      }));
+  };
+
   const handleMouseDown = (event: React.MouseEvent, task: Task, type: DragType) => {
     event.preventDefault();
     event.stopPropagation();
@@ -411,6 +426,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
 
             {tasks.map((task, index) => {
               const { left, width } = getTaskPosition(task);
+              const weekendSegments = getWeekendSegments(task);
               const isDraggingTask = dragPreview?.taskId === task.id;
 
               return (
@@ -469,6 +485,13 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
                     onMouseMove={handleTaskBarMouseMove}
                     onMouseLeave={handleTaskBarMouseLeave}
                   >
+                    {weekendSegments.map((segment) => (
+                      <div
+                        key={segment.key}
+                        className="gantt-task-weekend-overlay"
+                        style={{ left: segment.left, width: segment.width }}
+                      />
+                    ))}
                     <div
                       className="gantt-task-progress"
                       style={{ width: `${task.progress}%` }}

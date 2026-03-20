@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { AuthLoginPayload, AuthSetupPayload, CreateProjectDto, Project, Task, UpdateProjectDto, WeChatBindingStatus } from './types';
-import { ApiError, authApi, tasksApi, projectsApi, wechatApi } from './api';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AuthLoginPayload, AuthSetupPayload, CreateProjectDto, Project, ProjectAttachment, Task, UpdateProjectDto, WeChatBindingStatus } from './types';
+import { ApiError, authApi, projectAttachmentsApi, tasksApi, projectsApi, wechatApi } from './api';
 import ProjectList from './components/ProjectList';
 import GanttChart from './components/GanttChart';
 import TaskModal from './components/TaskModal';
@@ -101,6 +101,10 @@ const App: React.FC = () => {
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [wechatBindingStatus, setWechatBindingStatus] = useState<WeChatBindingStatus | null>(null);
   const [wechatLoading, setWechatLoading] = useState(false);
+  const [projectAttachments, setProjectAttachments] = useState<ProjectAttachment[]>([]);
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const projectFileInputRef = useRef<HTMLInputElement | null>(null);
   const [wechatForm, setWechatForm] = useState({
     openId: '',
     displayName: '',
@@ -129,6 +133,7 @@ const App: React.FC = () => {
     setProjects([]);
     setShowTaskModal(false);
     setEditingTask(null);
+    setProjectAttachments([]);
     setWechatBindingStatus(null);
     setWechatForm({ openId: '', displayName: '', avatarUrl: '' });
   }, []);
@@ -198,6 +203,21 @@ const App: React.FC = () => {
     }
   }, [resolveApiError]);
 
+  const loadProjectAttachments = useCallback(async (projectId: string) => {
+    try {
+      setAttachmentsLoading(true);
+      const data = await projectAttachmentsApi.list(projectId);
+      setProjectAttachments(data);
+    } catch (error) {
+      const message = resolveApiError(error, 'Failed to load attachments');
+      if (!(error instanceof ApiError && error.status === 401)) {
+        setAuthError(message);
+      }
+    } finally {
+      setAttachmentsLoading(false);
+    }
+  }, [resolveApiError]);
+
   const loadTasksByProject = useCallback(async (projectId: string) => {
     try {
       setTasksLoading(true);
@@ -264,11 +284,21 @@ const App: React.FC = () => {
   useEffect(() => {
     if (authView !== 'authenticated') {
       setTasks([]);
+      setProjectAttachments([]);
       return;
     }
 
     refreshTasks();
   }, [authView, refreshTasks]);
+
+  useEffect(() => {
+    if (authView !== 'authenticated' || !selectedProject || showAllTasks) {
+      setProjectAttachments([]);
+      return;
+    }
+
+    loadProjectAttachments(selectedProject.id);
+  }, [authView, loadProjectAttachments, selectedProject, showAllTasks]);
 
   const handleAuthSubmit = useCallback(async (payload: AuthSetupPayload | AuthLoginPayload) => {
     try {
@@ -402,6 +432,35 @@ const App: React.FC = () => {
     }
   };
 
+  const handleProjectFilesChange = useCallback(async (files: FileList | null) => {
+    if (!selectedProject || !files || files.length === 0) {
+      return;
+    }
+
+    try {
+      setAttachmentUploading(true);
+      setAuthError(null);
+      await projectAttachmentsApi.upload(selectedProject.id, Array.from(files));
+      await loadProjectAttachments(selectedProject.id);
+    } catch (error) {
+      setAuthError(resolveApiError(error, '文件上传失败。'));
+    } finally {
+      setAttachmentUploading(false);
+    }
+  }, [loadProjectAttachments, resolveApiError, selectedProject]);
+
+  const handleDeleteAttachment = useCallback(async (attachmentId: string) => {
+    if (!selectedProject) {
+      return;
+    }
+    try {
+      await projectAttachmentsApi.remove(selectedProject.id, attachmentId);
+      await loadProjectAttachments(selectedProject.id);
+    } catch (error) {
+      setAuthError(resolveApiError(error, '删除文件失败。'));
+    }
+  }, [loadProjectAttachments, resolveApiError, selectedProject]);
+
   const handleStartWeChatBinding = useCallback(async () => {
     try {
       setWechatLoading(true);
@@ -476,6 +535,17 @@ const App: React.FC = () => {
   const selectedProjectTasks = selectedProject
     ? tasks.filter((task) => task.project_id === selectedProject.id)
     : [];
+  const sortedProjectTasks = [...selectedProjectTasks].sort((left, right) => {
+    return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+  });
+  const recentProjectTasks = sortedProjectTasks.slice(0, 5);
+  const upcomingProjectTasks = [...selectedProjectTasks]
+    .filter((task) => task.progress < 100)
+    .sort((left, right) => new Date(left.end_date).getTime() - new Date(right.end_date).getTime())
+    .slice(0, 4);
+  const riskProjectTasks = selectedProjectTasks
+    .filter((task) => task.progress < 100 && new Date(task.end_date).getTime() < Date.now())
+    .slice(0, 4);
   const ganttReady = Boolean(selectedProject || showAllTasks);
 
   const renderContextEmpty = (icon: string, title: string, actionLabel?: string, onAction?: () => void) => (
@@ -678,11 +748,15 @@ const App: React.FC = () => {
             </div>
           ) : selectedProject ? (
             <div className="project-detail-copy">
-              <div className="project-detail-label-row">
-                <span className="project-detail-swatch" style={{ backgroundColor: selectedProject.color }} />
-                <span className="project-detail-label">已选项目</span>
+              <div className="project-focus-topline">
+                <div className="project-detail-label-row">
+                  <span className="project-detail-swatch" style={{ backgroundColor: selectedProject.color }} />
+                  <span className="project-detail-label">已选项目</span>
+                </div>
+                <div className="project-focus-description">{selectedProject.description || '-'}</div>
               </div>
-              <div className="project-detail-metrics">
+
+              <div className="project-detail-metrics project-detail-metrics-extended">
                 <div>
                   <span>项目任务</span>
                   <strong>{selectedProjectTasks.length}</strong>
@@ -696,8 +770,80 @@ const App: React.FC = () => {
                   </strong>
                 </div>
                 <div>
-                  <span>时间线</span>
-                  <strong>甘特</strong>
+                  <span>风险任务</span>
+                  <strong>{riskProjectTasks.length}</strong>
+                </div>
+                <div>
+                  <span>最近文件</span>
+                  <strong>{projectAttachments.length}</strong>
+                </div>
+              </div>
+
+              <div className="project-focus-grid">
+                <article className="project-detail-panel project-detail-panel-primary">
+                  <div className="project-detail-panel-header">
+                    <strong>最近任务动态</strong>
+                    <span>{recentProjectTasks.length} 条</span>
+                  </div>
+                  {recentProjectTasks.length > 0 ? (
+                    <div className="dense-task-list">
+                      {recentProjectTasks.map((task) => (
+                        <button key={task.id} type="button" className="dense-task-item" onClick={() => handleTaskClick(task)}>
+                          <span className="dense-task-dot" style={{ backgroundColor: task.color }} />
+                          <span className="dense-task-copy">
+                            <strong>{task.name}</strong>
+                            <span>{task.start_date} - {task.end_date} · {task.progress}%</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="project-summary-empty">暂无任务</div>
+                  )}
+                </article>
+
+                <div className="project-focus-side-stack">
+                  <article className="project-detail-panel">
+                    <div className="project-detail-panel-header">
+                      <strong>最近排期</strong>
+                      <span>{upcomingProjectTasks.length} 项</span>
+                    </div>
+                    {upcomingProjectTasks.length > 0 ? (
+                      <div className="dense-task-list compact">
+                        {upcomingProjectTasks.map((task) => (
+                          <button key={task.id} type="button" className="dense-task-item compact" onClick={() => handleTaskClick(task)}>
+                            <span className="dense-task-copy">
+                              <strong>{task.name}</strong>
+                              <span>截止 {task.end_date}</span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="project-summary-empty">暂无排期</div>
+                    )}
+                  </article>
+
+                  <article className="project-detail-panel risk-panel">
+                    <div className="project-detail-panel-header">
+                      <strong>风险任务</strong>
+                      <span>{riskProjectTasks.length} 项</span>
+                    </div>
+                    {riskProjectTasks.length > 0 ? (
+                      <div className="dense-task-list compact">
+                        {riskProjectTasks.map((task) => (
+                          <button key={task.id} type="button" className="dense-task-item compact risk" onClick={() => handleTaskClick(task)}>
+                            <span className="dense-task-copy">
+                              <strong>{task.name}</strong>
+                              <span>已超过 {task.end_date}</span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="project-summary-empty">暂无风险任务</div>
+                    )}
+                  </article>
                 </div>
               </div>
             </div>
@@ -709,21 +855,64 @@ const App: React.FC = () => {
         <section className="module-card">
           <div className="module-card-header">
             <div>
-              <span className="app-section-kicker">Project Actions</span>
-              <h3 className="module-card-title">模块联动</h3>
+              <span className="app-section-kicker">Project Files</span>
+              <h3 className="module-card-title">项目文件</h3>
             </div>
+            {selectedProject && (
+              <>
+                <input
+                  ref={projectFileInputRef}
+                  type="file"
+                  multiple
+                  hidden
+                  onChange={(event) => handleProjectFilesChange(event.target.files)}
+                />
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm app-action-button mb-0"
+                  onClick={() => projectFileInputRef.current?.click()}
+                >
+                  {attachmentUploading ? '上传中...' : '+ 上传文件'}
+                </button>
+              </>
+            )}
           </div>
-          <div className="module-link-grid">
-            <button type="button" className="module-link-card" onClick={() => setActiveModule('task-management')}>
-              <strong>切到任务管理</strong>
-            </button>
-            <button type="button" className="module-link-card" onClick={() => setActiveModule('gantt')}>
-              <strong>切到甘特模块</strong>
-            </button>
-            <button type="button" className="module-link-card" onClick={() => setActiveModule('dashboard')}>
-              <strong>返回总览</strong>
-            </button>
-          </div>
+          {selectedProject ? (
+            attachmentsLoading ? (
+              <div className="empty-state">
+                <div className="spinner-border text-primary" role="status" />
+                <p className="mt-3 mb-0">正在加载文件...</p>
+              </div>
+            ) : projectAttachments.length > 0 ? (
+              <div className="attachment-list">
+                {projectAttachments.map((attachment) => (
+                  <article key={attachment.id} className="attachment-item">
+                    <div className="attachment-main">
+                      <strong>{attachment.original_name}</strong>
+                      <span>{attachment.mime_type} · {Math.max(1, Math.round(attachment.size_bytes / 1024))} KB</span>
+                    </div>
+                    <div className="attachment-actions">
+                      <a
+                        className="btn btn-outline-secondary btn-sm app-action-button"
+                        href={projectAttachmentsApi.downloadUrl(selectedProject.id, attachment.id)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        下载
+                      </a>
+                      <button type="button" className="btn btn-outline-danger btn-sm app-action-button" onClick={() => handleDeleteAttachment(attachment.id)}>
+                        删除
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="project-summary-empty">暂无文件</div>
+            )
+          ) : (
+            renderContextEmpty('📎', '请选择一个项目')
+          )}
         </section>
       </div>
     </div>

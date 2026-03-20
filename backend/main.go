@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -57,6 +59,18 @@ type TaskView struct {
 	Task
 	ProjectName  string `json:"project_name,omitempty"`
 	ProjectColor string `json:"project_color,omitempty"`
+}
+
+type ProjectAttachment struct {
+	ID           string `json:"id"`
+	ProjectID    string `json:"project_id"`
+	OriginalName string `json:"original_name"`
+	StoredName   string `json:"stored_name"`
+	RelativePath string `json:"relative_path"`
+	MimeType     string `json:"mime_type"`
+	SizeBytes    int64  `json:"size_bytes"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 type projectPayload struct {
@@ -192,6 +206,7 @@ type store struct {
 	mu         sync.Mutex
 	path       string
 	legacyPath string
+	filesDir   string
 	db         *sql.DB
 }
 
@@ -212,7 +227,13 @@ func newStore(path string) (*store, error) {
 	s := &store{
 		path:       dbPath,
 		legacyPath: legacyPath,
+		filesDir:   filepath.Join(filepath.Dir(dbPath), "uploads"),
 		db:         db,
+	}
+
+	if err := os.MkdirAll(s.filesDir, 0o755); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
 	if err := s.initSchema(); err != nil {
@@ -281,6 +302,19 @@ func (s *store) initSchema() error {
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);`,
+		`CREATE TABLE IF NOT EXISTS project_attachments (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			original_name TEXT NOT NULL,
+			stored_name TEXT NOT NULL,
+			relative_path TEXT NOT NULL,
+			mime_type TEXT NOT NULL,
+			size_bytes INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_project_attachments_project_id ON project_attachments(project_id, created_at DESC);`,
 		`CREATE TABLE IF NOT EXISTS wechat_binding (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
 			open_id TEXT NOT NULL,
@@ -448,6 +482,159 @@ func (s *store) deleteProject(id string) error {
 		return os.ErrNotExist
 	}
 	return nil
+}
+
+func (s *store) listProjectAttachments(projectID string) []ProjectAttachment {
+	rows, err := s.db.Query(`
+		SELECT id, project_id, original_name, stored_name, relative_path, mime_type, size_bytes, created_at, updated_at
+		FROM project_attachments
+		WHERE project_id = ?
+		ORDER BY created_at DESC
+	`, projectID)
+	if err != nil {
+		log.Printf("list project attachments failed: %v", err)
+		return []ProjectAttachment{}
+	}
+	defer rows.Close()
+
+	attachments := []ProjectAttachment{}
+	for rows.Next() {
+		var attachment ProjectAttachment
+		if err := rows.Scan(&attachment.ID, &attachment.ProjectID, &attachment.OriginalName, &attachment.StoredName, &attachment.RelativePath, &attachment.MimeType, &attachment.SizeBytes, &attachment.CreatedAt, &attachment.UpdatedAt); err != nil {
+			log.Printf("scan attachment failed: %v", err)
+			return []ProjectAttachment{}
+		}
+		attachments = append(attachments, attachment)
+	}
+	return attachments
+}
+
+func (s *store) createProjectAttachments(projectID string, headers []*multipart.FileHeader) ([]ProjectAttachment, error) {
+	if len(headers) == 0 {
+		return []ProjectAttachment{}, errors.New("at least one file is required")
+	}
+
+	if _, ok := s.getProject(projectID); !ok {
+		return []ProjectAttachment{}, os.ErrNotExist
+	}
+
+	projectDir := filepath.Join(s.filesDir, projectID)
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		return []ProjectAttachment{}, err
+	}
+
+	now := nowISO()
+	attachments := make([]ProjectAttachment, 0, len(headers))
+	for _, header := range headers {
+		if header == nil {
+			continue
+		}
+		attachment, err := s.persistProjectAttachment(projectID, header, now, projectDir)
+		if err != nil {
+			return []ProjectAttachment{}, err
+		}
+		attachments = append(attachments, attachment)
+	}
+
+	if len(attachments) == 0 {
+		return []ProjectAttachment{}, errors.New("no valid files uploaded")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err := s.withTx(func(tx *sql.Tx) error {
+		for _, attachment := range attachments {
+			_, err := tx.Exec(`
+				INSERT INTO project_attachments (id, project_id, original_name, stored_name, relative_path, mime_type, size_bytes, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, attachment.ID, attachment.ProjectID, attachment.OriginalName, attachment.StoredName, attachment.RelativePath, attachment.MimeType, attachment.SizeBytes, attachment.CreatedAt, attachment.UpdatedAt)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return []ProjectAttachment{}, err
+	}
+
+	return attachments, nil
+}
+
+func (s *store) deleteProjectAttachment(projectID string, attachmentID string) error {
+	attachment, ok, err := s.getProjectAttachment(projectID, attachmentID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return os.ErrNotExist
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := s.db.Exec(`DELETE FROM project_attachments WHERE id = ? AND project_id = ?`, attachmentID, projectID); err != nil {
+		return err
+	}
+
+	_ = os.Remove(filepath.Join(filepath.Dir(s.path), attachment.RelativePath))
+	return nil
+}
+
+func (s *store) getProjectAttachment(projectID string, attachmentID string) (ProjectAttachment, bool, error) {
+	var attachment ProjectAttachment
+	err := s.db.QueryRow(`
+		SELECT id, project_id, original_name, stored_name, relative_path, mime_type, size_bytes, created_at, updated_at
+		FROM project_attachments
+		WHERE project_id = ? AND id = ?
+	`, projectID, attachmentID).Scan(&attachment.ID, &attachment.ProjectID, &attachment.OriginalName, &attachment.StoredName, &attachment.RelativePath, &attachment.MimeType, &attachment.SizeBytes, &attachment.CreatedAt, &attachment.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ProjectAttachment{}, false, nil
+		}
+		return ProjectAttachment{}, false, err
+	}
+	return attachment, true, nil
+}
+
+func (s *store) persistProjectAttachment(projectID string, header *multipart.FileHeader, now string, projectDir string) (ProjectAttachment, error) {
+	file, err := header.Open()
+	if err != nil {
+		return ProjectAttachment{}, err
+	}
+	defer file.Close()
+
+	attachmentID := newUUID()
+	storedName := attachmentID + filepath.Ext(header.Filename)
+	absPath := filepath.Join(projectDir, storedName)
+	output, err := os.Create(absPath)
+	if err != nil {
+		return ProjectAttachment{}, err
+	}
+	defer output.Close()
+
+	size, err := io.Copy(output, file)
+	if err != nil {
+		return ProjectAttachment{}, err
+	}
+
+	mimeType := header.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	return ProjectAttachment{
+		ID:           attachmentID,
+		ProjectID:    projectID,
+		OriginalName: header.Filename,
+		StoredName:   storedName,
+		RelativePath: filepath.ToSlash(filepath.Join("uploads", projectID, storedName)),
+		MimeType:     mimeType,
+		SizeBytes:    size,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, nil
 }
 
 func (s *store) listTasks() []TaskView {
@@ -1061,6 +1248,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/wechat/bind/confirm", s.handleWeChatBindingConfirm)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProjectByID)
+	mux.HandleFunc("/api/project-attachments/", s.handleProjectAttachments)
 	mux.HandleFunc("/api/tasks/all", s.handleAllTasks)
 	mux.HandleFunc("/api/tasks/project/", s.handleTasksByProject)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
@@ -1610,6 +1798,73 @@ func (s *server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeMethodNotAllowed(w)
 	}
+}
+
+func (s *server) handleProjectAttachments(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/project-attachments/")
+	parts := strings.Split(strings.Trim(trimmed, "/"), "/")
+	if len(parts) < 2 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	projectID := parts[0]
+	action := parts[1]
+
+	if action == "list" && r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, s.store.listProjectAttachments(projectID))
+		return
+	}
+
+	if action == "upload" && r.Method == http.MethodPost {
+		if err := r.ParseMultipartForm(64 << 20); err != nil {
+			writeError(w, http.StatusBadRequest, "failed to parse upload form")
+			return
+		}
+		files := r.MultipartForm.File["files"]
+		attachments, err := s.store.createProjectAttachments(projectID, files)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				writeError(w, http.StatusNotFound, "project not found")
+				return
+			}
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, attachments)
+		return
+	}
+
+	if action == "download" && len(parts) == 3 && r.Method == http.MethodGet {
+		attachment, ok, err := s.store.getProjectAttachment(projectID, parts[2])
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load attachment")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return
+		}
+		w.Header().Set("Content-Type", attachment.MimeType)
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", attachment.OriginalName))
+		http.ServeFile(w, r, filepath.Join(filepath.Dir(s.store.path), attachment.RelativePath))
+		return
+	}
+
+	if action == "delete" && len(parts) == 3 && r.Method == http.MethodDelete {
+		if err := s.store.deleteProjectAttachment(projectID, parts[2]); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				writeError(w, http.StatusNotFound, "attachment not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to delete attachment")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	writeMethodNotAllowed(w)
 }
 
 func validateTaskPayload(input taskPayload) error {
