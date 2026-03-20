@@ -62,8 +62,55 @@ export interface UpdateTaskDto {
 export interface AuthStatus {
   setup_complete: boolean;
   authenticated: boolean;
+  user?: AuthUser;
 }
 
-export interface AuthPayload {
-  secret: string;
+export interface AuthUser {
+  id: string;
+  username: string;
+  display_name: string;
+  is_admin: boolean;
+}
+
+export interface AuthSetupPayload {
+  username: string;
+  password: string;
+  display_name?: string;
+}
+
+export interface AuthLoginPayload {
+  username: string;
+  password: string;
+}
+
+export interface WeChatBindingInfo {
+  display_name: string;
+  avatar_url: string;
+  open_id_masked: string;
+  bound_at: string;
+}
+
+export interface WeChatBindAttempt {
+  bind_token: string;
+  verification_code: string;
+  status: string;
+  expires_at: string;
+  callback_path: string;
+  instruction_text: string;
+}
+
+export interface WeChatBindingStatus {
+  bound: boolean;
+  binding?: WeChatBindingInfo;
+  pending_attempt?: WeChatBindAttempt;
+  message?: string;
+}
+
+export interface WeChatBindConfirmPayload {
+  bind_token: string;
+  verification_code: string;
+  open_id: string;
+  union_id?: string;
+  display_name?: string;
+  avatar_url?: string;
 }

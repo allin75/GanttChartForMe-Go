@@ -53,6 +53,8 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
   const [hoveredTask, setHoveredTask] = useState<Task | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const lastClickTimeRef = useRef<{ taskId: string; time: number } | null>(null);
+  const ganttContainerRef = useRef<HTMLDivElement | null>(null);
+  const didAutoScrollRef = useRef(false);
 
   const getDateRange = useCallback(() => {
     if (tasks.length === 0) {
@@ -94,6 +96,38 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
   const today = new Date();
   const todayOffset = differenceInDays(today, rangeStart);
   const showTodayLine = todayOffset >= 0 && todayOffset < days.length;
+
+  const scrollToCurrentWeek = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const container = ganttContainerRef.current;
+    if (!container || days.length === 0) {
+      return;
+    }
+
+    const currentWeekStart = startOfWeek(today, { weekStartsOn: 1 });
+    const currentWeekOffset = differenceInDays(currentWeekStart, rangeStart);
+    const safeOffset = Math.max(currentWeekOffset, 0);
+    const previewWeeks = 5;
+    const previewWidth = previewWeeks * 7 * columnWidth;
+    const centeredLeft = taskNameWidth + safeOffset * columnWidth - Math.max((container.clientWidth - taskNameWidth - previewWidth) / 2, 0);
+
+    container.scrollTo({
+      left: Math.max(centeredLeft, 0),
+      behavior,
+    });
+  }, [columnWidth, days.length, rangeStart, taskNameWidth, today]);
+
+  useEffect(() => {
+    didAutoScrollRef.current = false;
+  }, [tasks.length, viewMode, rangeStart.getTime(), rangeEnd.getTime()]);
+
+  useEffect(() => {
+    if (!ganttContainerRef.current || days.length === 0 || didAutoScrollRef.current) {
+      return;
+    }
+
+    scrollToCurrentWeek('auto');
+    didAutoScrollRef.current = true;
+  }, [days.length, scrollToCurrentWeek]);
 
   const getTaskPosition = (task: Task) => {
     const startDate = new Date(task.start_date);
@@ -277,7 +311,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
     return (
       <>
         <div className="gantt-header-row gantt-months">
-          <div className="gantt-header-cell" style={{ width: taskNameWidth }}>任务名称</div>
+          <div className="gantt-header-cell gantt-header-cell-label" style={{ width: taskNameWidth }}>任务名称</div>
           {weeks.map((week) => (
             <div
               key={week.start.toISOString()}
@@ -289,7 +323,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
           ))}
         </div>
         <div className="gantt-header-row gantt-weeks">
-          <div className="gantt-header-cell" style={{ width: taskNameWidth }}>周次</div>
+          <div className="gantt-header-cell gantt-header-cell-label" style={{ width: taskNameWidth }}>周次</div>
           {weeks.map((week) => (
             <div
               key={`${week.start.toISOString()}-week`}
@@ -301,7 +335,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
           ))}
         </div>
         <div className="gantt-header-row gantt-days">
-          <div className="gantt-header-cell" style={{ width: taskNameWidth }}>日期</div>
+          <div className="gantt-header-cell gantt-header-cell-label" style={{ width: taskNameWidth }}>日期</div>
           <div className="gantt-days-container">
             {days.map((day) => (
               <div
@@ -321,7 +355,20 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
   return (
     <div className="gantt-chart">
       <div className="gantt-toolbar">
-        <div className="gantt-view-modes">
+        <div className="gantt-toolbar-copy">
+          <span className="gantt-toolbar-kicker">Timeline View</span>
+          <h3 className="gantt-toolbar-title">任务排期面板</h3>
+        </div>
+        <div className="gantt-toolbar-actions">
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-primary gantt-focus-button"
+            onClick={() => scrollToCurrentWeek()}
+          >
+            回到当前周
+          </button>
+
+          <div className="gantt-view-modes">
           {(Object.keys(VIEW_MODE_LABELS) as ViewMode[]).map((mode) => (
             <button
               key={mode}
@@ -331,107 +378,114 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
               {VIEW_MODE_LABELS[mode]}
             </button>
           ))}
+          </div>
         </div>
       </div>
 
       <div className="gantt-container">
-        <div className="gantt-header">
-          {renderDateHeader()}
-        </div>
-
-        <div className="gantt-body">
-          <div className="gantt-grid" style={{ width: taskNameWidth + days.length * columnWidth }}>
-            {showTodayLine && (
-              <div
-                className="gantt-today-line"
-                style={{ left: taskNameWidth + todayOffset * columnWidth + columnWidth / 2 }}
-              />
-            )}
-            {days.map((day, index) => (
-              <div
-                key={`${day.toISOString()}-grid`}
-                className={`gantt-grid-line ${isWeekend(day) ? 'weekend' : ''} ${isSameDay(day, today) ? 'today' : ''}`}
-                style={{ left: taskNameWidth + index * columnWidth, width: columnWidth }}
-              />
-            ))}
+        <div className="gantt-scroll-container" ref={ganttContainerRef}>
+          <div className="gantt-header">
+            {renderDateHeader()}
           </div>
 
-          {tasks.map((task, index) => {
-            const { left, width } = getTaskPosition(task);
-            const isDraggingTask = dragPreview?.taskId === task.id;
-
-            return (
-              <div
-                key={task.id}
-                className="gantt-row"
-                style={{ top: index * rowHeight, height: rowHeight }}
-              >
+          <div className="gantt-body">
+            <div
+              className="gantt-fixed-column-backdrop"
+              style={{ width: taskNameWidth }}
+            />
+            <div className="gantt-grid" style={{ width: taskNameWidth + days.length * columnWidth }}>
+              {showTodayLine && (
                 <div
-                  className="gantt-task-name"
-                  style={{ width: taskNameWidth }}
-                  onDoubleClick={() => onTaskClick(task)}
-                  onMouseEnter={(event) => handleTaskBarMouseEnter(event, task)}
-                  onMouseMove={handleTaskBarMouseMove}
-                  onMouseLeave={handleTaskBarMouseLeave}
-                >
-                  <span
-                    className="task-progress-dot"
-                    style={{
-                      background: task.progress >= 100 ? '#28a745' : task.progress > 0 ? '#ffc107' : '#6c757d',
-                    }}
-                  />
-                  <span className="task-name-text">
-                    {task.name}
-                    {showProjectName && task.project_name && (
-                      <span className="task-project-badge" style={{ backgroundColor: task.project_color || '#6c757d' }}>
-                        {task.project_name}
-                      </span>
-                    )}
-                  </span>
-                </div>
+                  className="gantt-today-line"
+                  style={{ left: taskNameWidth + todayOffset * columnWidth + columnWidth / 2 }}
+                />
+              )}
+              {days.map((day, index) => (
+                <div
+                  key={`${day.toISOString()}-grid`}
+                  className={`gantt-grid-line ${isWeekend(day) ? 'weekend' : ''} ${isSameDay(day, today) ? 'today' : ''}`}
+                  style={{ left: taskNameWidth + index * columnWidth, width: columnWidth }}
+                />
+              ))}
+            </div>
 
-                {isDraggingTask && dragPreview && (
+            {tasks.map((task, index) => {
+              const { left, width } = getTaskPosition(task);
+              const isDraggingTask = dragPreview?.taskId === task.id;
+
+              return (
+                <div
+                  key={task.id}
+                  className="gantt-row"
+                  style={{ top: index * rowHeight, height: rowHeight }}
+                >
                   <div
-                    className="gantt-task-bar gantt-task-bar-preview"
+                    className="gantt-task-name"
+                    style={{ width: taskNameWidth }}
+                    onDoubleClick={() => onTaskClick(task)}
+                    onMouseEnter={(event) => handleTaskBarMouseEnter(event, task)}
+                    onMouseMove={handleTaskBarMouseMove}
+                    onMouseLeave={handleTaskBarMouseLeave}
+                  >
+                    <span
+                      className="task-progress-dot"
+                      style={{
+                        background: task.progress >= 100 ? 'var(--color-success)' : task.progress > 0 ? 'var(--color-warning)' : 'var(--color-text-muted)',
+                      }}
+                    />
+                    <span className="task-name-text">
+                      {task.name}
+                      {showProjectName && task.project_name && (
+                        <span className="task-project-badge" style={{ backgroundColor: task.project_color || 'var(--color-text-muted)' }}>
+                          {task.project_name}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+
+                  {isDraggingTask && dragPreview && (
+                    <div
+                      className="gantt-task-bar gantt-task-bar-preview"
+                      style={{
+                        left: dragPreview.left,
+                        width: dragPreview.width,
+                        backgroundColor: task.color,
+                        top: (rowHeight - 24) / 2,
+                      }}
+                    />
+                  )}
+
+                  <div
+                    className={`gantt-task-bar ${isDraggingTask ? 'gantt-task-bar-dragging' : ''}`}
                     style={{
-                      left: dragPreview.left,
-                      width: dragPreview.width,
+                      left,
+                      width,
                       backgroundColor: task.color,
                       top: (rowHeight - 24) / 2,
                     }}
-                  />
-                )}
-
-                <div
-                  className={`gantt-task-bar ${isDraggingTask ? 'gantt-task-bar-dragging' : ''}`}
-                  style={{
-                    left,
-                    width,
-                    backgroundColor: task.color,
-                    top: (rowHeight - 24) / 2,
-                  }}
-                  onMouseDown={(event) => handleMouseDown(event, task, 'move')}
-                  onClick={(event) => handleTaskBarClick(event, task)}
-                  onMouseEnter={(event) => handleTaskBarMouseEnter(event, task)}
-                  onMouseMove={handleTaskBarMouseMove}
-                  onMouseLeave={handleTaskBarMouseLeave}
-                >
-                  <div
-                    className="gantt-task-progress"
-                    style={{ width: `${task.progress}%` }}
-                  />
-                  <div
-                    className="gantt-resize-handle start"
-                    onMouseDown={(event) => handleMouseDown(event, task, 'start')}
-                  />
-                  <div
-                    className="gantt-resize-handle end"
-                    onMouseDown={(event) => handleMouseDown(event, task, 'end')}
-                  />
+                    onMouseDown={(event) => handleMouseDown(event, task, 'move')}
+                    onClick={(event) => handleTaskBarClick(event, task)}
+                    onMouseEnter={(event) => handleTaskBarMouseEnter(event, task)}
+                    onMouseMove={handleTaskBarMouseMove}
+                    onMouseLeave={handleTaskBarMouseLeave}
+                  >
+                    <div
+                      className="gantt-task-progress"
+                      style={{ width: `${task.progress}%` }}
+                    />
+                    <div
+                      className="gantt-resize-handle start"
+                      onMouseDown={(event) => handleMouseDown(event, task, 'start')}
+                    />
+                    <div
+                      className="gantt-resize-handle end"
+                      onMouseDown={(event) => handleMouseDown(event, task, 'end')}
+                    />
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
 

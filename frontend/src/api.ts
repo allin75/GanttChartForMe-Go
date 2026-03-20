@@ -5,8 +5,11 @@ import {
   UpdateProjectDto,
   CreateTaskDto,
   UpdateTaskDto,
-  AuthPayload,
+  AuthSetupPayload,
+  AuthLoginPayload,
   AuthStatus,
+  WeChatBindingStatus,
+  WeChatBindConfirmPayload,
 } from './types';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
@@ -79,15 +82,29 @@ export const tasksApi = {
 
 export const authApi = {
   getStatus: () => fetchApi<AuthStatus>('/api/auth/status'),
-  setup: (data: AuthPayload) => fetchApi<AuthStatus>('/api/auth/setup', {
+  setup: (data: AuthSetupPayload) => fetchApi<AuthStatus>('/api/auth/setup', {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  login: (data: AuthPayload) => fetchApi<AuthStatus>('/api/auth/login', {
+  login: (data: AuthLoginPayload) => fetchApi<AuthStatus>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify(data),
   }),
   logout: () => fetchApi<{ authenticated: boolean }>('/api/auth/logout', {
     method: 'POST',
+  }),
+};
+
+export const wechatApi = {
+  getBindingStatus: () => fetchApi<WeChatBindingStatus>('/api/account/bindings/wechat'),
+  startBinding: () => fetchApi<WeChatBindingStatus>('/api/account/bindings/wechat/start', {
+    method: 'POST',
+  }),
+  confirmBinding: (data: WeChatBindConfirmPayload) => fetchApi<{ status: string }>('/api/wechat/bind/confirm', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  removeBinding: () => fetchApi<WeChatBindingStatus>('/api/account/bindings/wechat', {
+    method: 'DELETE',
   }),
 };

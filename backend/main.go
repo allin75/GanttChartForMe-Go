@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 )
 
@@ -81,13 +82,85 @@ type dataFile struct {
 	Tasks    []Task    `json:"tasks"`
 }
 
-type authPayload struct {
-	Secret string `json:"secret"`
+type authSetupPayload struct {
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	DisplayName string `json:"display_name"`
+}
+
+type authLoginPayload struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type authUserResponse struct {
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	IsAdmin     bool   `json:"is_admin"`
 }
 
 type authStatusResponse struct {
-	SetupComplete bool `json:"setup_complete"`
-	Authenticated bool `json:"authenticated"`
+	SetupComplete bool              `json:"setup_complete"`
+	Authenticated bool              `json:"authenticated"`
+	User          *authUserResponse `json:"user,omitempty"`
+}
+
+type wechatBinding struct {
+	OpenID      string
+	UnionID     string
+	DisplayName string
+	AvatarURL   string
+	BoundAt     string
+	UpdatedAt   string
+}
+
+type wechatBindAttempt struct {
+	ID               string
+	SessionID        string
+	BindToken        string
+	VerificationCode string
+	Status           string
+	OpenID           string
+	UnionID          string
+	DisplayName      string
+	AvatarURL        string
+	ExpiresAt        string
+	ConfirmedAt      string
+	CreatedAt        string
+	UpdatedAt        string
+}
+
+type wechatBindingInfoResponse struct {
+	DisplayName  string `json:"display_name"`
+	AvatarURL    string `json:"avatar_url"`
+	OpenIDMasked string `json:"open_id_masked"`
+	BoundAt      string `json:"bound_at"`
+}
+
+type wechatBindAttemptResponse struct {
+	BindToken        string `json:"bind_token"`
+	VerificationCode string `json:"verification_code"`
+	Status           string `json:"status"`
+	ExpiresAt        string `json:"expires_at"`
+	CallbackPath     string `json:"callback_path"`
+	InstructionText  string `json:"instruction_text"`
+}
+
+type wechatBindingStatusResponse struct {
+	Bound          bool                       `json:"bound"`
+	Binding        *wechatBindingInfoResponse `json:"binding,omitempty"`
+	PendingAttempt *wechatBindAttemptResponse `json:"pending_attempt,omitempty"`
+	Message        string                     `json:"message,omitempty"`
+}
+
+type wechatBindConfirmPayload struct {
+	BindToken        string `json:"bind_token"`
+	VerificationCode string `json:"verification_code"`
+	OpenID           string `json:"open_id"`
+	UnionID          string `json:"union_id"`
+	DisplayName      string `json:"display_name"`
+	AvatarURL        string `json:"avatar_url"`
 }
 
 type authConfig struct {
@@ -99,9 +172,20 @@ type authConfig struct {
 
 type authSession struct {
 	ID        string
+	UserID    string
 	ExpiresAt string
 	CreatedAt string
 	UpdatedAt string
+}
+
+type user struct {
+	ID           string
+	Username     string
+	PasswordHash string
+	DisplayName  string
+	IsAdmin      bool
+	CreatedAt    string
+	UpdatedAt    string
 }
 
 type store struct {
@@ -181,11 +265,48 @@ func (s *store) initSchema() error {
 		);`,
 		`CREATE TABLE IF NOT EXISTS auth_sessions (
 			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL DEFAULT '',
 			expires_at TEXT NOT NULL,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);`,
+		`CREATE TABLE IF NOT EXISTS users (
+			id TEXT PRIMARY KEY,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			display_name TEXT NOT NULL DEFAULT '',
+			is_admin INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);`,
+		`CREATE TABLE IF NOT EXISTS wechat_binding (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			open_id TEXT NOT NULL,
+			union_id TEXT NOT NULL DEFAULT '',
+			display_name TEXT NOT NULL DEFAULT '',
+			avatar_url TEXT NOT NULL DEFAULT '',
+			bound_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS wechat_bind_attempts (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			bind_token TEXT NOT NULL UNIQUE,
+			verification_code TEXT NOT NULL,
+			status TEXT NOT NULL,
+			open_id TEXT NOT NULL DEFAULT '',
+			union_id TEXT NOT NULL DEFAULT '',
+			display_name TEXT NOT NULL DEFAULT '',
+			avatar_url TEXT NOT NULL DEFAULT '',
+			expires_at TEXT NOT NULL,
+			confirmed_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_wechat_bind_attempts_session_id ON wechat_bind_attempts(session_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_wechat_bind_attempts_expires_at ON wechat_bind_attempts(expires_at);`,
 	}
 
 	for _, statement := range statements {
@@ -501,73 +622,130 @@ func (s *store) getAuthConfig() (authConfig, bool, error) {
 	return config, true, nil
 }
 
-func (s *store) isAuthConfigured() (bool, error) {
-	_, ok, err := s.getAuthConfig()
-	return ok, err
+func (s *store) getUserByID(id string) (user, bool, error) {
+	var account user
+	err := s.db.QueryRow(`
+		SELECT id, username, password_hash, display_name, is_admin, created_at, updated_at
+		FROM users
+		WHERE id = ?
+	`, id).Scan(&account.ID, &account.Username, &account.PasswordHash, &account.DisplayName, &account.IsAdmin, &account.CreatedAt, &account.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return user{}, false, nil
+		}
+		return user{}, false, err
+	}
+	return account, true, nil
 }
 
-func (s *store) createInitialSecret(secret string) error {
-	trimmed := strings.TrimSpace(secret)
-	if trimmed == "" {
-		return errors.New("secret is required")
+func (s *store) getUserByUsername(username string) (user, bool, error) {
+	var account user
+	err := s.db.QueryRow(`
+		SELECT id, username, password_hash, display_name, is_admin, created_at, updated_at
+		FROM users
+		WHERE username = ?
+	`, strings.TrimSpace(strings.ToLower(username))).Scan(&account.ID, &account.Username, &account.PasswordHash, &account.DisplayName, &account.IsAdmin, &account.CreatedAt, &account.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return user{}, false, nil
+		}
+		return user{}, false, err
+	}
+	return account, true, nil
+}
+
+func (s *store) isAuthConfigured() (bool, error) {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (s *store) createInitialUser(payload authSetupPayload) (user, error) {
+	username := normalizeUsername(payload.Username)
+	password := strings.TrimSpace(payload.Password)
+	if username == "" {
+		return user{}, errors.New("username is required")
+	}
+	if len(password) < 6 {
+		return user{}, errors.New("password must be at least 6 characters")
 	}
 
-	salt, err := randomHex(16)
+	passwordHash, err := hashPassword(password)
 	if err != nil {
-		return err
+		return user{}, err
 	}
-	hash := hashSecret(trimmed, salt)
+
 	now := nowISO()
+	account := user{
+		ID:           newUUID(),
+		Username:     username,
+		PasswordHash: passwordHash,
+		DisplayName:  strings.TrimSpace(payload.DisplayName),
+		IsAdmin:      true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if account.DisplayName == "" {
+		account.DisplayName = username
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.withTx(func(tx *sql.Tx) error {
+	err = s.withTx(func(tx *sql.Tx) error {
 		var count int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM auth_config WHERE id = 1`).Scan(&count); err != nil {
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
 			return err
 		}
 		if count > 0 {
-			return errors.New("secret already configured")
+			return errors.New("account already configured")
 		}
 
 		_, err := tx.Exec(`
-			INSERT INTO auth_config (id, secret_hash, salt, created_at, updated_at)
-			VALUES (1, ?, ?, ?, ?)
-		`, hash, salt, now, now)
+			INSERT INTO users (id, username, password_hash, display_name, is_admin, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, account.ID, account.Username, account.PasswordHash, account.DisplayName, account.IsAdmin, account.CreatedAt, account.UpdatedAt)
 		return err
 	})
-}
-
-func (s *store) verifySecret(secret string) (bool, error) {
-	trimmed := strings.TrimSpace(secret)
-	if trimmed == "" {
-		return false, errors.New("secret is required")
+	if err != nil {
+		return user{}, err
 	}
 
-	config, ok, err := s.getAuthConfig()
+	return account, nil
+}
+
+func (s *store) verifyUserCredentials(username string, password string) (user, bool, error) {
+	account, ok, err := s.getUserByUsername(username)
 	if err != nil {
-		return false, err
+		return user{}, false, err
 	}
 	if !ok {
-		return false, errors.New("secret is not configured")
+		return user{}, false, nil
 	}
-
-	expected := hashSecret(trimmed, config.Salt)
-	if subtle.ConstantTimeCompare([]byte(expected), []byte(config.SecretHash)) == 1 {
-		return true, nil
+	if err := bcrypt.CompareHashAndPassword([]byte(account.PasswordHash), []byte(password)); err != nil {
+		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+			return user{}, false, nil
+		}
+		return user{}, false, err
 	}
-	return false, nil
+	return account, true, nil
 }
 
-func (s *store) createSession() (authSession, error) {
+func (s *store) createSession(userID string) (authSession, error) {
 	sessionID, err := randomHex(32)
 	if err != nil {
 		return authSession{}, err
 	}
+	trimmedUserID := strings.TrimSpace(userID)
+	if trimmedUserID == "" {
+		return authSession{}, errors.New("user_id is required")
+	}
 	now := time.Now().UTC()
 	session := authSession{
 		ID:        sessionID,
+		UserID:    trimmedUserID,
 		ExpiresAt: now.Add(sessionDuration).Format(time.RFC3339),
 		CreatedAt: now.Format(time.RFC3339),
 		UpdatedAt: now.Format(time.RFC3339),
@@ -577,9 +755,9 @@ func (s *store) createSession() (authSession, error) {
 	defer s.mu.Unlock()
 
 	_, err = s.db.Exec(`
-		INSERT INTO auth_sessions (id, expires_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?)
-	`, session.ID, session.ExpiresAt, session.CreatedAt, session.UpdatedAt)
+		INSERT INTO auth_sessions (id, user_id, expires_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, session.ID, session.UserID, session.ExpiresAt, session.CreatedAt, session.UpdatedAt)
 	if err != nil {
 		return authSession{}, err
 	}
@@ -590,10 +768,10 @@ func (s *store) createSession() (authSession, error) {
 func (s *store) getSession(id string) (authSession, bool, error) {
 	var session authSession
 	err := s.db.QueryRow(`
-		SELECT id, expires_at, created_at, updated_at
+		SELECT id, user_id, expires_at, created_at, updated_at
 		FROM auth_sessions
 		WHERE id = ?
-	`, id).Scan(&session.ID, &session.ExpiresAt, &session.CreatedAt, &session.UpdatedAt)
+	`, id).Scan(&session.ID, &session.UserID, &session.ExpiresAt, &session.CreatedAt, &session.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return authSession{}, false, nil
@@ -635,6 +813,214 @@ func (s *store) deleteExpiredSessions() error {
 	return err
 }
 
+func (s *store) getWeChatBinding() (wechatBinding, bool, error) {
+	var binding wechatBinding
+	err := s.db.QueryRow(`
+		SELECT open_id, union_id, display_name, avatar_url, bound_at, updated_at
+		FROM wechat_binding
+		WHERE id = 1
+	`).Scan(&binding.OpenID, &binding.UnionID, &binding.DisplayName, &binding.AvatarURL, &binding.BoundAt, &binding.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return wechatBinding{}, false, nil
+		}
+		return wechatBinding{}, false, err
+	}
+	return binding, true, nil
+}
+
+func (s *store) getActiveWeChatBindAttempt(sessionID string) (wechatBindAttempt, bool, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return wechatBindAttempt{}, false, nil
+	}
+
+	var attempt wechatBindAttempt
+	err := s.db.QueryRow(`
+		SELECT id, session_id, bind_token, verification_code, status, open_id, union_id, display_name, avatar_url, expires_at, confirmed_at, created_at, updated_at
+		FROM wechat_bind_attempts
+		WHERE session_id = ? AND status = 'pending' AND expires_at > ?
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, sessionID, nowISO()).Scan(
+		&attempt.ID,
+		&attempt.SessionID,
+		&attempt.BindToken,
+		&attempt.VerificationCode,
+		&attempt.Status,
+		&attempt.OpenID,
+		&attempt.UnionID,
+		&attempt.DisplayName,
+		&attempt.AvatarURL,
+		&attempt.ExpiresAt,
+		&attempt.ConfirmedAt,
+		&attempt.CreatedAt,
+		&attempt.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return wechatBindAttempt{}, false, nil
+		}
+		return wechatBindAttempt{}, false, err
+	}
+	return attempt, true, nil
+}
+
+func (s *store) createWeChatBindAttempt(sessionID string) (wechatBindAttempt, error) {
+	trimmed := strings.TrimSpace(sessionID)
+	if trimmed == "" {
+		return wechatBindAttempt{}, errors.New("session is required")
+	}
+
+	bindToken, err := randomHex(16)
+	if err != nil {
+		return wechatBindAttempt{}, err
+	}
+	verificationCode, err := randomDigits(6)
+	if err != nil {
+		return wechatBindAttempt{}, err
+	}
+
+	now := nowISO()
+	attempt := wechatBindAttempt{
+		ID:               newUUID(),
+		SessionID:        trimmed,
+		BindToken:        bindToken,
+		VerificationCode: verificationCode,
+		Status:           "pending",
+		ExpiresAt:        time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339),
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err = s.withTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM wechat_bind_attempts WHERE session_id = ?`, attempt.SessionID); err != nil {
+			return err
+		}
+
+		_, err := tx.Exec(`
+			INSERT INTO wechat_bind_attempts (
+				id, session_id, bind_token, verification_code, status,
+				open_id, union_id, display_name, avatar_url,
+				expires_at, confirmed_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, '', '', '', '', ?, '', ?, ?)
+		`, attempt.ID, attempt.SessionID, attempt.BindToken, attempt.VerificationCode, attempt.Status, attempt.ExpiresAt, attempt.CreatedAt, attempt.UpdatedAt)
+		return err
+	})
+	if err != nil {
+		return wechatBindAttempt{}, err
+	}
+
+	return attempt, nil
+}
+
+func (s *store) cleanupExpiredWeChatBindAttempts() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`DELETE FROM wechat_bind_attempts WHERE expires_at <= ?`, nowISO())
+	return err
+}
+
+func (s *store) confirmWeChatBind(payload wechatBindConfirmPayload) error {
+	bindToken := strings.TrimSpace(payload.BindToken)
+	verificationCode := strings.TrimSpace(payload.VerificationCode)
+	openID := strings.TrimSpace(payload.OpenID)
+	if bindToken == "" || verificationCode == "" || openID == "" {
+		return errors.New("bind_token, verification_code and open_id are required")
+	}
+
+	now := nowISO()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.withTx(func(tx *sql.Tx) error {
+		var attempt wechatBindAttempt
+		err := tx.QueryRow(`
+			SELECT id, session_id, bind_token, verification_code, status, open_id, union_id, display_name, avatar_url, expires_at, confirmed_at, created_at, updated_at
+			FROM wechat_bind_attempts
+			WHERE bind_token = ?
+			LIMIT 1
+		`, bindToken).Scan(
+			&attempt.ID,
+			&attempt.SessionID,
+			&attempt.BindToken,
+			&attempt.VerificationCode,
+			&attempt.Status,
+			&attempt.OpenID,
+			&attempt.UnionID,
+			&attempt.DisplayName,
+			&attempt.AvatarURL,
+			&attempt.ExpiresAt,
+			&attempt.ConfirmedAt,
+			&attempt.CreatedAt,
+			&attempt.UpdatedAt,
+		)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return os.ErrNotExist
+			}
+			return err
+		}
+
+		if attempt.Status != "pending" {
+			return errors.New("bind attempt is not pending")
+		}
+
+		expiresAt, err := time.Parse(time.RFC3339, attempt.ExpiresAt)
+		if err != nil || time.Now().UTC().After(expiresAt) {
+			return errors.New("bind attempt expired")
+		}
+
+		if subtle.ConstantTimeCompare([]byte(attempt.VerificationCode), []byte(verificationCode)) != 1 {
+			return errors.New("invalid verification code")
+		}
+
+		displayName := strings.TrimSpace(payload.DisplayName)
+		if displayName == "" {
+			displayName = "微信用户"
+		}
+
+		if _, err := tx.Exec(`
+			INSERT INTO wechat_binding (id, open_id, union_id, display_name, avatar_url, bound_at, updated_at)
+			VALUES (1, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				open_id = excluded.open_id,
+				union_id = excluded.union_id,
+				display_name = excluded.display_name,
+				avatar_url = excluded.avatar_url,
+				bound_at = excluded.bound_at,
+				updated_at = excluded.updated_at
+		`, openID, strings.TrimSpace(payload.UnionID), displayName, strings.TrimSpace(payload.AvatarURL), now, now); err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(`
+			UPDATE wechat_bind_attempts
+			SET status = 'confirmed', open_id = ?, union_id = ?, display_name = ?, avatar_url = ?, confirmed_at = ?, updated_at = ?
+			WHERE id = ?
+		`, openID, strings.TrimSpace(payload.UnionID), displayName, strings.TrimSpace(payload.AvatarURL), now, now, attempt.ID); err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(`DELETE FROM wechat_bind_attempts WHERE session_id = ?`, attempt.SessionID); err != nil {
+			return err
+		}
+
+		return nil
+	})
+}
+
+func (s *store) deleteWeChatBinding() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`DELETE FROM wechat_binding WHERE id = 1`)
+	return err
+}
+
 type server struct {
 	store       *store
 	frontendDir string
@@ -642,7 +1028,7 @@ type server struct {
 
 func main() {
 	port := envOr("PORT", "3001")
-	dataPath := envOr("DATA_PATH", envOr("DB_PATH", filepath.Join(".", "data", "gantt.db")))
+	dataPath := resolveDefaultDataPath()
 	frontendDir := envOr("FRONTEND_DIR", filepath.Join(".", "frontend"))
 
 	store, err := newStore(dataPath)
@@ -670,6 +1056,9 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/auth/setup", s.handleAuthSetup)
 	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
 	mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("/api/account/bindings/wechat", s.handleWeChatBinding)
+	mux.HandleFunc("/api/account/bindings/wechat/start", s.handleWeChatBindingStart)
+	mux.HandleFunc("/api/wechat/bind/confirm", s.handleWeChatBindingConfirm)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProjectByID)
 	mux.HandleFunc("/api/tasks/all", s.handleAllTasks)
@@ -734,6 +1123,7 @@ func (s *server) isProtectedAPIPath(path string) bool {
 		"/api/auth/setup",
 		"/api/auth/login",
 		"/api/auth/logout",
+		"/api/wechat/bind/confirm",
 	}
 	for _, publicPath := range publicPaths {
 		if path == publicPath {
@@ -800,6 +1190,7 @@ func (s *server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authenticated := false
+	var currentUser *authUserResponse
 	if configured {
 		if err := s.store.deleteExpiredSessions(); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load auth status")
@@ -816,7 +1207,18 @@ func (s *server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 			if ok {
 				expiresAt, parseErr := time.Parse(time.RFC3339, session.ExpiresAt)
 				if parseErr == nil && time.Now().UTC().Before(expiresAt) {
-					authenticated = true
+					account, userOK, userErr := s.store.getUserByID(session.UserID)
+					if userErr != nil {
+						writeError(w, http.StatusInternalServerError, "failed to load auth status")
+						return
+					}
+					if userOK {
+						authenticated = true
+						currentUser = toAuthUserResponse(account)
+					} else {
+						_ = s.store.deleteSession(session.ID)
+						s.clearSessionCookie(w)
+					}
 				} else {
 					_ = s.store.deleteSession(session.ID)
 					s.clearSessionCookie(w)
@@ -828,6 +1230,7 @@ func (s *server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, authStatusResponse{
 		SetupComplete: configured,
 		Authenticated: authenticated,
+		User:          currentUser,
 	})
 }
 
@@ -843,30 +1246,27 @@ func (s *server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if configured {
-		writeError(w, http.StatusConflict, "secret already configured")
+		writeError(w, http.StatusConflict, "account already configured")
 		return
 	}
 
-	var payload authPayload
+	var payload authSetupPayload
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if strings.TrimSpace(payload.Secret) == "" {
-		writeError(w, http.StatusBadRequest, "secret is required")
-		return
-	}
 
-	if err := s.store.createInitialSecret(payload.Secret); err != nil {
+	account, err := s.store.createInitialUser(payload)
+	if err != nil {
 		status := http.StatusBadRequest
-		if err.Error() == "secret already configured" {
+		if err.Error() == "account already configured" {
 			status = http.StatusConflict
 		}
 		writeError(w, status, err.Error())
 		return
 	}
 
-	session, err := s.store.createSession()
+	session, err := s.store.createSession(account.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
@@ -876,6 +1276,7 @@ func (s *server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, authStatusResponse{
 		SetupComplete: true,
 		Authenticated: true,
+		User:          toAuthUserResponse(account),
 	})
 }
 
@@ -891,27 +1292,27 @@ func (s *server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !configured {
-		writeError(w, http.StatusConflict, "secret is not configured")
+		writeError(w, http.StatusConflict, "account is not configured")
 		return
 	}
 
-	var payload authPayload
+	var payload authLoginPayload
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	valid, err := s.store.verifySecret(payload.Secret)
+	account, valid, err := s.store.verifyUserCredentials(payload.Username, payload.Password)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if !valid {
-		writeError(w, http.StatusUnauthorized, "invalid secret")
+		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
 
-	session, err := s.store.createSession()
+	session, err := s.store.createSession(account.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
@@ -921,6 +1322,7 @@ func (s *server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, authStatusResponse{
 		SetupComplete: true,
 		Authenticated: true,
+		User:          toAuthUserResponse(account),
 	})
 }
 
@@ -936,6 +1338,109 @@ func (s *server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	s.clearSessionCookie(w)
 
 	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
+}
+
+func (s *server) handleWeChatBinding(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.cleanupExpiredWeChatBindAttempts(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load wechat binding")
+		return
+	}
+
+	sessionID := s.sessionIDFromRequest(r)
+	if sessionID == "" {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		status, err := s.currentWeChatBindingStatus(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load wechat binding")
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+	case http.MethodDelete:
+		if err := s.store.deleteWeChatBinding(); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to unbind wechat")
+			return
+		}
+		status, err := s.currentWeChatBindingStatus(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load wechat binding")
+			return
+		}
+		status.Message = "微信绑定已解除"
+		writeJSON(w, http.StatusOK, status)
+	default:
+		writeMethodNotAllowed(w)
+	}
+}
+
+func (s *server) handleWeChatBindingStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	if err := s.store.cleanupExpiredWeChatBindAttempts(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start wechat binding")
+		return
+	}
+
+	sessionID := s.sessionIDFromRequest(r)
+	if sessionID == "" {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	attempt, ok, err := s.store.getActiveWeChatBindAttempt(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start wechat binding")
+		return
+	}
+	if !ok {
+		attempt, err = s.store.createWeChatBindAttempt(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to start wechat binding")
+			return
+		}
+	}
+
+	status, err := s.currentWeChatBindingStatus(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load wechat binding")
+		return
+	}
+	status.PendingAttempt = buildWeChatBindAttemptResponse(attempt)
+	status.Message = "请使用微信接入服务完成确认，系统已生成一次性绑定口令。"
+	writeJSON(w, http.StatusCreated, status)
+}
+
+func (s *server) handleWeChatBindingConfirm(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	var payload wechatBindConfirmPayload
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.store.confirmWeChatBind(payload); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, os.ErrNotExist) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "confirmed",
+	})
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1122,6 +1627,58 @@ func normalizeTask(task Task) Task {
 		task.Dependencies = []string{}
 	}
 	return task
+}
+
+func (s *server) currentWeChatBindingStatus(sessionID string) (wechatBindingStatusResponse, error) {
+	binding, bound, err := s.store.getWeChatBinding()
+	if err != nil {
+		return wechatBindingStatusResponse{}, err
+	}
+
+	status := wechatBindingStatusResponse{
+		Bound:   bound,
+		Message: "微信绑定用于扩展扫码身份联动，不影响现有密钥登录。",
+	}
+	if bound {
+		status.Binding = &wechatBindingInfoResponse{
+			DisplayName:  binding.DisplayName,
+			AvatarURL:    binding.AvatarURL,
+			OpenIDMasked: maskIdentifier(binding.OpenID),
+			BoundAt:      binding.BoundAt,
+		}
+	}
+
+	attempt, ok, err := s.store.getActiveWeChatBindAttempt(sessionID)
+	if err != nil {
+		return wechatBindingStatusResponse{}, err
+	}
+	if ok {
+		status.PendingAttempt = buildWeChatBindAttemptResponse(attempt)
+	}
+
+	return status, nil
+}
+
+func buildWeChatBindAttemptResponse(attempt wechatBindAttempt) *wechatBindAttemptResponse {
+	return &wechatBindAttemptResponse{
+		BindToken:        attempt.BindToken,
+		VerificationCode: attempt.VerificationCode,
+		Status:           attempt.Status,
+		ExpiresAt:        attempt.ExpiresAt,
+		CallbackPath:     "/api/wechat/bind/confirm",
+		InstructionText:  "将绑定口令、验证码和微信 open_id 提交到确认接口，即可把微信身份绑定到当前已登录账号。",
+	}
+}
+
+func maskIdentifier(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	if len(trimmed) <= 8 {
+		return trimmed[:2] + "****"
+	}
+	return trimmed[:4] + "****" + trimmed[len(trimmed)-4:]
 }
 
 func (s *store) queryTaskViews(projectID string) []TaskView {
@@ -1464,6 +2021,20 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+func resolveDefaultDataPath() string {
+	if value := strings.TrimSpace(os.Getenv("DATA_PATH")); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(os.Getenv("DB_PATH")); value != "" {
+		return value
+	}
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		return filepath.Join(exeDir, "data", "gantt.db")
+	}
+	return filepath.Join("backend", "data", "gantt.db")
+}
+
 func stringValue(value *string, fallback string) string {
 	if value == nil {
 		return fallback
@@ -1526,6 +2097,44 @@ func randomHex(size int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+func randomDigits(size int) (string, error) {
+	if size <= 0 {
+		return "", errors.New("size must be positive")
+	}
+
+	bytes := make([]byte, size)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+
+	result := make([]byte, size)
+	for index, value := range bytes {
+		result[index] = byte('0' + (value % 10))
+	}
+	return string(result), nil
+}
+
+func normalizeUsername(value string) string {
+	return strings.TrimSpace(strings.ToLower(value))
+}
+
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func toAuthUserResponse(account user) *authUserResponse {
+	return &authUserResponse{
+		ID:          account.ID,
+		Username:    account.Username,
+		DisplayName: account.DisplayName,
+		IsAdmin:     account.IsAdmin,
+	}
 }
 
 func hashSecret(secret string, salt string) string {

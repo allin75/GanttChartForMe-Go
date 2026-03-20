@@ -84,19 +84,22 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
     (formData.start_date as string) > (formData.end_date as string);
 
   return (
-    <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+    <div className="modal show d-block app-modal-backdrop">
       <div className="modal-dialog modal-dialog-centered">
-        <div className="modal-content">
-          <div className="modal-header">
+        <div className="modal-content app-modal-content">
+          <div className="modal-header app-modal-header">
             <h5 className="modal-title">{task ? '编辑任务' : '新建任务'}</h5>
             <button type="button" className="btn-close" onClick={onClose} />
           </div>
-          <div className="modal-body">
+          <div className="modal-body app-modal-body">
+            <div className="task-modal-project-badge" style={{ backgroundColor: project.color }}>
+              {project.name}
+            </div>
             <div className="mb-3">
               <label className="form-label">任务名称 *</label>
               <input
                 type="text"
-                className="form-control"
+                className="form-control app-form-control"
                 value={formData.name || ''}
                 onChange={(event) => setFormData({ ...formData, name: event.target.value })}
               />
@@ -104,7 +107,7 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
             <div className="mb-3">
               <label className="form-label">描述</label>
               <textarea
-                className="form-control"
+                className="form-control app-form-control"
                 rows={2}
                 value={formData.description || ''}
                 onChange={(event) => setFormData({ ...formData, description: event.target.value })}
@@ -115,7 +118,7 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
                 <label className="form-label">开始日期 *</label>
                 <input
                   type="date"
-                  className="form-control"
+                  className="form-control app-form-control"
                   value={formData.start_date || ''}
                   onChange={(event) => setFormData({ ...formData, start_date: event.target.value })}
                 />
@@ -124,14 +127,14 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
                 <label className="form-label">结束日期 *</label>
                 <input
                   type="date"
-                  className="form-control"
+                  className="form-control app-form-control"
                   value={formData.end_date || ''}
                   onChange={(event) => setFormData({ ...formData, end_date: event.target.value })}
                 />
               </div>
             </div>
             {isInvalidDateRange && (
-              <div className="alert alert-warning py-2">
+              <div className="alert alert-warning py-2 task-modal-warning">
                 结束日期不能早于开始日期。
               </div>
             )}
@@ -150,7 +153,8 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
               <label className="form-label">颜色</label>
               <div className="color-picker">
                 {TASK_COLORS.map((color) => (
-                  <div
+                  <button
+                    type="button"
                     key={color}
                     className={`color-option ${formData.color === color ? 'selected' : ''}`}
                     style={{ backgroundColor: color }}
@@ -160,7 +164,7 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
               </div>
             </div>
           </div>
-          <div className="modal-footer">
+          <div className="modal-footer app-modal-footer">
             {task && (
               <button type="button" className="btn btn-danger me-auto" onClick={handleDelete}>
                 删除

@@ -100,18 +100,22 @@ const ProjectList: React.FC<ProjectListProps> = ({
   return (
     <div className="project-list">
       <div className="project-list-header">
-        <h5 className="mb-0">项目列表</h5>
-        <button className="btn btn-sm btn-primary" onClick={openCreateModal}>
+        <div>
+          <span className="sidebar-kicker">Workspace</span>
+          <h5 className="project-list-title mb-0">项目列表</h5>
+          <p className="project-list-subtitle mb-0">按项目管理排期与交付节奏</p>
+        </div>
+        <button className="btn btn-sm btn-primary sidebar-create-button" onClick={openCreateModal}>
           + 新建
         </button>
       </div>
 
       {loading ? (
-        <div className="text-center p-3">
+        <div className="project-list-state text-center p-3">
           <div className="spinner-border spinner-border-sm" role="status" />
         </div>
       ) : projects.length === 0 ? (
-        <div className="text-center text-muted p-3">
+        <div className="project-list-state text-center text-muted p-3">
           暂无项目，点击上方按钮创建。
         </div>
       ) : (
@@ -120,11 +124,12 @@ const ProjectList: React.FC<ProjectListProps> = ({
             className={`project-item all-tasks ${showAllTasks ? 'active' : ''}`}
             onClick={onSelectAllTasks}
           >
-            <div className="project-color" style={{ backgroundColor: '#6c757d' }}>📋</div>
+            <div className="project-color project-color-all" style={{ backgroundColor: '#6c757d' }}>📋</div>
             <div className="project-info">
               <div className="project-name">全部任务</div>
               <div className="project-desc">查看所有项目中的任务</div>
             </div>
+            <span className="project-item-indicator">总览</span>
           </div>
 
           {projects.map((project) => (
@@ -138,6 +143,7 @@ const ProjectList: React.FC<ProjectListProps> = ({
                 <div className="project-name">{project.name}</div>
                 {project.description && <div className="project-desc">{project.description}</div>}
               </div>
+              <span className="project-item-indicator">项目</span>
               <div className="project-actions">
                 <button
                   className="btn btn-sm btn-link text-secondary"
@@ -164,19 +170,19 @@ const ProjectList: React.FC<ProjectListProps> = ({
       )}
 
       {showModal && (
-        <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal show d-block app-modal-backdrop">
           <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-              <div className="modal-header">
+            <div className="modal-content app-modal-content">
+              <div className="modal-header app-modal-header">
                 <h5 className="modal-title">{editingProject ? '编辑项目' : '新建项目'}</h5>
                 <button type="button" className="btn-close" onClick={resetForm} />
               </div>
-              <div className="modal-body">
+              <div className="modal-body app-modal-body">
                 <div className="mb-3">
                   <label className="form-label">项目名称 *</label>
                   <input
                     type="text"
-                    className="form-control"
+                    className="form-control app-form-control"
                     value={formData.name}
                     onChange={(event) => setFormData({ ...formData, name: event.target.value })}
                   />
@@ -184,7 +190,7 @@ const ProjectList: React.FC<ProjectListProps> = ({
                 <div className="mb-3">
                   <label className="form-label">描述</label>
                   <textarea
-                    className="form-control"
+                    className="form-control app-form-control"
                     rows={2}
                     value={formData.description}
                     onChange={(event) => setFormData({ ...formData, description: event.target.value })}
@@ -194,7 +200,8 @@ const ProjectList: React.FC<ProjectListProps> = ({
                   <label className="form-label">颜色</label>
                   <div className="color-picker">
                     {PROJECT_COLORS.map((color) => (
-                      <div
+                      <button
+                        type="button"
                         key={color}
                         className={`color-option ${formData.color === color ? 'selected' : ''}`}
                         style={{ backgroundColor: color }}
@@ -204,7 +211,7 @@ const ProjectList: React.FC<ProjectListProps> = ({
                   </div>
                 </div>
               </div>
-              <div className="modal-footer">
+              <div className="modal-footer app-modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={resetForm}>取消</button>
                 <button
                   type="button"
