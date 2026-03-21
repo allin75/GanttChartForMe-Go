@@ -35,6 +35,8 @@ type Project struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Owner       string `json:"owner"`
+	StartDate   string `json:"start_date"`
 	Color       string `json:"color"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
@@ -45,6 +47,7 @@ type Task struct {
 	ProjectID    string   `json:"project_id"`
 	Name         string   `json:"name"`
 	Description  string   `json:"description"`
+	Owner        string   `json:"owner"`
 	StartDate    string   `json:"start_date"`
 	EndDate      string   `json:"end_date"`
 	Progress     int      `json:"progress"`
@@ -64,6 +67,8 @@ type TaskView struct {
 type ProjectAttachment struct {
 	ID           string `json:"id"`
 	ProjectID    string `json:"project_id"`
+	TaskID       string `json:"task_id"`
+	TaskName     string `json:"task_name,omitempty"`
 	OriginalName string `json:"original_name"`
 	StoredName   string `json:"stored_name"`
 	RelativePath string `json:"relative_path"`
@@ -76,6 +81,8 @@ type ProjectAttachment struct {
 type projectPayload struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
+	Owner       *string `json:"owner"`
+	StartDate   *string `json:"start_date"`
 	Color       *string `json:"color"`
 }
 
@@ -83,6 +90,7 @@ type taskPayload struct {
 	ProjectID    string    `json:"project_id"`
 	Name         string    `json:"name"`
 	Description  *string   `json:"description"`
+	Owner        *string   `json:"owner"`
 	StartDate    string    `json:"start_date"`
 	EndDate      string    `json:"end_date"`
 	Progress     *int      `json:"progress"`
@@ -177,6 +185,10 @@ type wechatBindConfirmPayload struct {
 	AvatarURL        string `json:"avatar_url"`
 }
 
+type projectAttachmentAssignPayload struct {
+	TaskID string `json:"task_id"`
+}
+
 type authConfig struct {
 	SecretHash string
 	Salt       string
@@ -255,6 +267,8 @@ func (s *store) initSchema() error {
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
+			owner TEXT NOT NULL DEFAULT '',
+			start_date TEXT NOT NULL DEFAULT '',
 			color TEXT NOT NULL,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -264,6 +278,7 @@ func (s *store) initSchema() error {
 			project_id TEXT NOT NULL,
 			name TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
+			owner TEXT NOT NULL DEFAULT '',
 			start_date TEXT NOT NULL,
 			end_date TEXT NOT NULL,
 			progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
@@ -305,6 +320,7 @@ func (s *store) initSchema() error {
 		`CREATE TABLE IF NOT EXISTS project_attachments (
 			id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL,
+			task_id TEXT NOT NULL DEFAULT '',
 			original_name TEXT NOT NULL,
 			stored_name TEXT NOT NULL,
 			relative_path TEXT NOT NULL,
@@ -312,7 +328,8 @@ func (s *store) initSchema() error {
 			size_bytes INTEGER NOT NULL,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
-			FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+			FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+			FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_project_attachments_project_id ON project_attachments(project_id, created_at DESC);`,
 		`CREATE TABLE IF NOT EXISTS wechat_binding (
@@ -348,12 +365,50 @@ func (s *store) initSchema() error {
 			return fmt.Errorf("initialize sqlite schema: %w", err)
 		}
 	}
+	if err := s.ensureColumn("projects", "owner", "ALTER TABLE projects ADD COLUMN owner TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("projects", "start_date", "ALTER TABLE projects ADD COLUMN start_date TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("tasks", "owner", "ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("project_attachments", "task_id", "ALTER TABLE project_attachments ADD COLUMN task_id TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *store) ensureColumn(table string, column string, alterSQL string) error {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+
+	_, err = s.db.Exec(alterSQL)
+	return err
 }
 
 func (s *store) listProjects() []Project {
 	rows, err := s.db.Query(`
-		SELECT id, name, description, color, created_at, updated_at
+		SELECT id, name, description, owner, start_date, color, created_at, updated_at
 		FROM projects
 		ORDER BY created_at DESC
 	`)
@@ -370,6 +425,8 @@ func (s *store) listProjects() []Project {
 			&project.ID,
 			&project.Name,
 			&project.Description,
+			&project.Owner,
+			&project.StartDate,
 			&project.Color,
 			&project.CreatedAt,
 			&project.UpdatedAt,
@@ -389,13 +446,15 @@ func (s *store) listProjects() []Project {
 func (s *store) getProject(id string) (Project, bool) {
 	var project Project
 	err := s.db.QueryRow(`
-		SELECT id, name, description, color, created_at, updated_at
+		SELECT id, name, description, owner, start_date, color, created_at, updated_at
 		FROM projects
 		WHERE id = ?
 	`, id).Scan(
 		&project.ID,
 		&project.Name,
 		&project.Description,
+		&project.Owner,
+		&project.StartDate,
 		&project.Color,
 		&project.CreatedAt,
 		&project.UpdatedAt,
@@ -417,6 +476,8 @@ func (s *store) createProject(input projectPayload) (Project, error) {
 		ID:          newUUID(),
 		Name:        name,
 		Description: stringValue(input.Description, ""),
+		Owner:       stringValue(input.Owner, ""),
+		StartDate:   stringValue(input.StartDate, ""),
 		Color:       stringValue(input.Color, defaultColor),
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -426,9 +487,9 @@ func (s *store) createProject(input projectPayload) (Project, error) {
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(`
-		INSERT INTO projects (id, name, description, color, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, project.ID, project.Name, project.Description, project.Color, project.CreatedAt, project.UpdatedAt)
+		INSERT INTO projects (id, name, description, owner, start_date, color, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, project.ID, project.Name, project.Description, project.Owner, project.StartDate, project.Color, project.CreatedAt, project.UpdatedAt)
 	if err != nil {
 		return Project{}, err
 	}
@@ -450,6 +511,12 @@ func (s *store) updateProject(id string, input projectPayload) (Project, error) 
 	if input.Description != nil {
 		project.Description = *input.Description
 	}
+	if input.Owner != nil {
+		project.Owner = *input.Owner
+	}
+	if input.StartDate != nil {
+		project.StartDate = *input.StartDate
+	}
 	if input.Color != nil {
 		project.Color = *input.Color
 	}
@@ -457,9 +524,9 @@ func (s *store) updateProject(id string, input projectPayload) (Project, error) 
 
 	_, err := s.db.Exec(`
 		UPDATE projects
-		SET name = ?, description = ?, color = ?, updated_at = ?
+		SET name = ?, description = ?, owner = ?, start_date = ?, color = ?, updated_at = ?
 		WHERE id = ?
-	`, project.Name, project.Description, project.Color, project.UpdatedAt, id)
+	`, project.Name, project.Description, project.Owner, project.StartDate, project.Color, project.UpdatedAt, id)
 	if err != nil {
 		return Project{}, err
 	}
@@ -486,10 +553,11 @@ func (s *store) deleteProject(id string) error {
 
 func (s *store) listProjectAttachments(projectID string) []ProjectAttachment {
 	rows, err := s.db.Query(`
-		SELECT id, project_id, original_name, stored_name, relative_path, mime_type, size_bytes, created_at, updated_at
-		FROM project_attachments
+		SELECT a.id, a.project_id, a.task_id, COALESCE(t.name, ''), a.original_name, a.stored_name, a.relative_path, a.mime_type, a.size_bytes, a.created_at, a.updated_at
+		FROM project_attachments a
+		LEFT JOIN tasks t ON t.id = a.task_id
 		WHERE project_id = ?
-		ORDER BY created_at DESC
+		ORDER BY a.created_at DESC
 	`, projectID)
 	if err != nil {
 		log.Printf("list project attachments failed: %v", err)
@@ -500,7 +568,7 @@ func (s *store) listProjectAttachments(projectID string) []ProjectAttachment {
 	attachments := []ProjectAttachment{}
 	for rows.Next() {
 		var attachment ProjectAttachment
-		if err := rows.Scan(&attachment.ID, &attachment.ProjectID, &attachment.OriginalName, &attachment.StoredName, &attachment.RelativePath, &attachment.MimeType, &attachment.SizeBytes, &attachment.CreatedAt, &attachment.UpdatedAt); err != nil {
+		if err := rows.Scan(&attachment.ID, &attachment.ProjectID, &attachment.TaskID, &attachment.TaskName, &attachment.OriginalName, &attachment.StoredName, &attachment.RelativePath, &attachment.MimeType, &attachment.SizeBytes, &attachment.CreatedAt, &attachment.UpdatedAt); err != nil {
 			log.Printf("scan attachment failed: %v", err)
 			return []ProjectAttachment{}
 		}
@@ -509,13 +577,20 @@ func (s *store) listProjectAttachments(projectID string) []ProjectAttachment {
 	return attachments
 }
 
-func (s *store) createProjectAttachments(projectID string, headers []*multipart.FileHeader) ([]ProjectAttachment, error) {
+func (s *store) createProjectAttachments(projectID string, taskID string, headers []*multipart.FileHeader) ([]ProjectAttachment, error) {
 	if len(headers) == 0 {
 		return []ProjectAttachment{}, errors.New("at least one file is required")
 	}
 
 	if _, ok := s.getProject(projectID); !ok {
 		return []ProjectAttachment{}, os.ErrNotExist
+	}
+	trimmedTaskID := strings.TrimSpace(taskID)
+	if trimmedTaskID != "" {
+		task, ok := s.getTask(trimmedTaskID)
+		if !ok || task.ProjectID != projectID {
+			return []ProjectAttachment{}, errors.New("task not found in project")
+		}
 	}
 
 	projectDir := filepath.Join(s.filesDir, projectID)
@@ -529,7 +604,7 @@ func (s *store) createProjectAttachments(projectID string, headers []*multipart.
 		if header == nil {
 			continue
 		}
-		attachment, err := s.persistProjectAttachment(projectID, header, now, projectDir)
+		attachment, err := s.persistProjectAttachment(projectID, trimmedTaskID, header, now, projectDir)
 		if err != nil {
 			return []ProjectAttachment{}, err
 		}
@@ -546,9 +621,9 @@ func (s *store) createProjectAttachments(projectID string, headers []*multipart.
 	err := s.withTx(func(tx *sql.Tx) error {
 		for _, attachment := range attachments {
 			_, err := tx.Exec(`
-				INSERT INTO project_attachments (id, project_id, original_name, stored_name, relative_path, mime_type, size_bytes, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, attachment.ID, attachment.ProjectID, attachment.OriginalName, attachment.StoredName, attachment.RelativePath, attachment.MimeType, attachment.SizeBytes, attachment.CreatedAt, attachment.UpdatedAt)
+				INSERT INTO project_attachments (id, project_id, task_id, original_name, stored_name, relative_path, mime_type, size_bytes, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, attachment.ID, attachment.ProjectID, attachment.TaskID, attachment.OriginalName, attachment.StoredName, attachment.RelativePath, attachment.MimeType, attachment.SizeBytes, attachment.CreatedAt, attachment.UpdatedAt)
 			if err != nil {
 				return err
 			}
@@ -585,10 +660,10 @@ func (s *store) deleteProjectAttachment(projectID string, attachmentID string) e
 func (s *store) getProjectAttachment(projectID string, attachmentID string) (ProjectAttachment, bool, error) {
 	var attachment ProjectAttachment
 	err := s.db.QueryRow(`
-		SELECT id, project_id, original_name, stored_name, relative_path, mime_type, size_bytes, created_at, updated_at
+		SELECT id, project_id, task_id, original_name, stored_name, relative_path, mime_type, size_bytes, created_at, updated_at
 		FROM project_attachments
 		WHERE project_id = ? AND id = ?
-	`, projectID, attachmentID).Scan(&attachment.ID, &attachment.ProjectID, &attachment.OriginalName, &attachment.StoredName, &attachment.RelativePath, &attachment.MimeType, &attachment.SizeBytes, &attachment.CreatedAt, &attachment.UpdatedAt)
+	`, projectID, attachmentID).Scan(&attachment.ID, &attachment.ProjectID, &attachment.TaskID, &attachment.OriginalName, &attachment.StoredName, &attachment.RelativePath, &attachment.MimeType, &attachment.SizeBytes, &attachment.CreatedAt, &attachment.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ProjectAttachment{}, false, nil
@@ -598,7 +673,7 @@ func (s *store) getProjectAttachment(projectID string, attachmentID string) (Pro
 	return attachment, true, nil
 }
 
-func (s *store) persistProjectAttachment(projectID string, header *multipart.FileHeader, now string, projectDir string) (ProjectAttachment, error) {
+func (s *store) persistProjectAttachment(projectID string, taskID string, header *multipart.FileHeader, now string, projectDir string) (ProjectAttachment, error) {
 	file, err := header.Open()
 	if err != nil {
 		return ProjectAttachment{}, err
@@ -627,6 +702,7 @@ func (s *store) persistProjectAttachment(projectID string, header *multipart.Fil
 	return ProjectAttachment{
 		ID:           attachmentID,
 		ProjectID:    projectID,
+		TaskID:       taskID,
 		OriginalName: header.Filename,
 		StoredName:   storedName,
 		RelativePath: filepath.ToSlash(filepath.Join("uploads", projectID, storedName)),
@@ -1822,7 +1898,7 @@ func (s *server) handleProjectAttachments(w http.ResponseWriter, r *http.Request
 			return
 		}
 		files := r.MultipartForm.File["files"]
-		attachments, err := s.store.createProjectAttachments(projectID, files)
+		attachments, err := s.store.createProjectAttachments(projectID, r.FormValue("task_id"), files)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				writeError(w, http.StatusNotFound, "project not found")

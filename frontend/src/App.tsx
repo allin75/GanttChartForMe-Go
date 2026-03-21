@@ -461,6 +461,18 @@ const App: React.FC = () => {
     }
   }, [loadProjectAttachments, resolveApiError, selectedProject]);
 
+  const handleAssignAttachmentTask = useCallback(async (attachmentId: string, taskId: string) => {
+    if (!selectedProject) {
+      return;
+    }
+    try {
+      await projectAttachmentsApi.assignTask(selectedProject.id, attachmentId, taskId || undefined);
+      await loadProjectAttachments(selectedProject.id);
+    } catch (error) {
+      setAuthError(resolveApiError(error, '更新文件关联失败。'));
+    }
+  }, [loadProjectAttachments, resolveApiError, selectedProject]);
+
   const handleStartWeChatBinding = useCallback(async () => {
     try {
       setWechatLoading(true);
@@ -753,7 +765,10 @@ const App: React.FC = () => {
                   <span className="project-detail-swatch" style={{ backgroundColor: selectedProject.color }} />
                   <span className="project-detail-label">已选项目</span>
                 </div>
-                <div className="project-focus-description">{selectedProject.description || '-'}</div>
+                <div className="project-focus-description">
+                  {selectedProject.owner ? `负责人：${selectedProject.owner}` : '负责人：-'}
+                  {selectedProject.start_date ? ` · 开始：${selectedProject.start_date}` : ''}
+                </div>
               </div>
 
               <div className="project-detail-metrics project-detail-metrics-extended">
@@ -792,7 +807,10 @@ const App: React.FC = () => {
                           <span className="dense-task-dot" style={{ backgroundColor: task.color }} />
                           <span className="dense-task-copy">
                             <strong>{task.name}</strong>
-                            <span>{task.start_date} - {task.end_date} · {task.progress}%</span>
+                            <span>
+                              {task.owner ? `${task.owner} · ` : ''}
+                              {task.start_date} - {task.end_date} · {task.progress}%
+                            </span>
                           </span>
                         </button>
                       ))}
@@ -814,7 +832,7 @@ const App: React.FC = () => {
                           <button key={task.id} type="button" className="dense-task-item compact" onClick={() => handleTaskClick(task)}>
                             <span className="dense-task-copy">
                               <strong>{task.name}</strong>
-                              <span>截止 {task.end_date}</span>
+                              <span>{task.owner ? `${task.owner} · ` : ''}截止 {task.end_date}</span>
                             </span>
                           </button>
                         ))}
@@ -835,7 +853,7 @@ const App: React.FC = () => {
                           <button key={task.id} type="button" className="dense-task-item compact risk" onClick={() => handleTaskClick(task)}>
                             <span className="dense-task-copy">
                               <strong>{task.name}</strong>
-                              <span>已超过 {task.end_date}</span>
+                              <span>{task.owner ? `${task.owner} · ` : ''}已超过 {task.end_date}</span>
                             </span>
                           </button>
                         ))}
@@ -889,9 +907,22 @@ const App: React.FC = () => {
                   <article key={attachment.id} className="attachment-item">
                     <div className="attachment-main">
                       <strong>{attachment.original_name}</strong>
-                      <span>{attachment.mime_type} · {Math.max(1, Math.round(attachment.size_bytes / 1024))} KB</span>
+                      <span>
+                        {attachment.task_name ? `任务：${attachment.task_name} · ` : ''}
+                        {attachment.mime_type} · {Math.max(1, Math.round(attachment.size_bytes / 1024))} KB
+                      </span>
                     </div>
                     <div className="attachment-actions">
+                      <select
+                        className="form-select form-select-sm app-attachment-task-select"
+                        value={attachment.task_id || ''}
+                        onChange={(event) => handleAssignAttachmentTask(attachment.id, event.target.value)}
+                      >
+                        <option value="">不关联任务</option>
+                        {selectedProjectTasks.map((task) => (
+                          <option key={task.id} value={task.id}>{task.name}</option>
+                        ))}
+                      </select>
                       <a
                         className="btn btn-outline-secondary btn-sm app-action-button"
                         href={projectAttachmentsApi.downloadUrl(selectedProject.id, attachment.id)}
@@ -1337,6 +1368,7 @@ const App: React.FC = () => {
         <TaskModal
           task={editingTask}
           project={modalProject}
+          projectTasks={selectedProject ? tasks.filter((item) => item.project_id === modalProject.id) : []}
           onClose={handleTaskModalClose}
           onSave={handleTaskModalSave}
         />

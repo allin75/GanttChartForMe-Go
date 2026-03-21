@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { format, addDays } from 'date-fns';
-import { CreateTaskDto, Project, Task, UpdateTaskDto } from '../types';
-import { tasksApi } from '../api';
+import { CreateTaskDto, Project, ProjectAttachment, Task, UpdateTaskDto } from '../types';
+import { projectAttachmentsApi, tasksApi } from '../api';
 
 interface TaskModalProps {
   task: Task | null;
   project: Project;
+  projectTasks?: Task[];
   onClose: () => void;
   onSave: () => Promise<void>;
 }
@@ -16,6 +17,7 @@ const buildDefaultTaskForm = (project: Project): CreateTaskDto => ({
   project_id: project.id,
   name: '',
   description: '',
+  owner: '',
   start_date: format(new Date(), 'yyyy-MM-dd'),
   end_date: format(addDays(new Date(), 7), 'yyyy-MM-dd'),
   progress: 0,
@@ -24,14 +26,20 @@ const buildDefaultTaskForm = (project: Project): CreateTaskDto => ({
   dependencies: [],
 });
 
-const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave }) => {
+const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [], onClose, onSave }) => {
   const [formData, setFormData] = useState<CreateTaskDto | UpdateTaskDto>(buildDefaultTaskForm(project));
+  const [attachments, setAttachments] = useState<ProjectAttachment[]>([]);
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (task) {
       setFormData({
         name: task.name,
         description: task.description,
+        owner: task.owner,
         start_date: task.start_date,
         end_date: task.end_date,
         progress: task.progress,
@@ -45,8 +53,28 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
     setFormData(buildDefaultTaskForm(project));
   }, [project, task]);
 
+  useEffect(() => {
+    const loadAttachments = async () => {
+      if (!task) {
+        setAttachments([]);
+        return;
+      }
+
+      try {
+        setAttachmentsLoading(true);
+        const data = await projectAttachmentsApi.list(project.id);
+        setAttachments(data.filter((attachment) => attachment.task_id === task.id));
+      } finally {
+        setAttachmentsLoading(false);
+      }
+    };
+
+    loadAttachments();
+  }, [project.id, task]);
+
   const handleSubmit = async () => {
     try {
+      setErrorMessage('');
       if (task) {
         await tasksApi.update(task.id, formData);
       } else {
@@ -57,6 +85,7 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
       onClose();
     } catch (error) {
       console.error('Failed to save task:', error);
+      setErrorMessage(error instanceof Error ? error.message : '保存任务失败');
     }
   };
 
@@ -75,6 +104,37 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
       onClose();
     } catch (error) {
       console.error('Failed to delete task:', error);
+    }
+  };
+
+  const handleFileChange = async (files: FileList | null) => {
+    if (!task || !files || files.length === 0) {
+      return;
+    }
+
+    try {
+      setErrorMessage('');
+      setAttachmentUploading(true);
+      await projectAttachmentsApi.upload(project.id, Array.from(files), task.id);
+      const data = await projectAttachmentsApi.list(project.id);
+      setAttachments(data.filter((attachment) => attachment.task_id === task.id));
+    } catch (error) {
+      console.error('Failed to upload task attachments:', error);
+      setErrorMessage(error instanceof Error ? error.message : '上传文件失败');
+    } finally {
+      setAttachmentUploading(false);
+    }
+  };
+
+  const handleAssignAttachment = async (attachmentId: string, taskId: string) => {
+    try {
+      setErrorMessage('');
+      await projectAttachmentsApi.assignTask(project.id, attachmentId, taskId || undefined);
+      const data = await projectAttachmentsApi.list(project.id);
+      setAttachments(data.filter((attachment) => attachment.task_id === task?.id));
+    } catch (error) {
+      console.error('Failed to update attachment task relation:', error);
+      setErrorMessage(error instanceof Error ? error.message : '更新文件关联失败');
     }
   };
 
@@ -113,6 +173,15 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
                 onChange={(event) => setFormData({ ...formData, description: event.target.value })}
               />
             </div>
+            <div className="mb-3">
+              <label className="form-label">负责人</label>
+              <input
+                type="text"
+                className="form-control app-form-control"
+                value={formData.owner || ''}
+                onChange={(event) => setFormData({ ...formData, owner: event.target.value })}
+              />
+            </div>
             <div className="row mb-3">
               <div className="col">
                 <label className="form-label">开始日期 *</label>
@@ -136,6 +205,11 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
             {isInvalidDateRange && (
               <div className="alert alert-warning py-2 task-modal-warning">
                 结束日期不能早于开始日期。
+              </div>
+            )}
+            {errorMessage && (
+              <div className="alert alert-danger py-2 task-modal-warning">
+                {errorMessage}
               </div>
             )}
             <div className="mb-3">
@@ -163,6 +237,67 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, onClose, onSave })
                 ))}
               </div>
             </div>
+
+            {task && (
+              <div className="mt-4">
+                <div className="d-flex justify-content-between align-items-center mb-3 gap-3">
+                  <label className="form-label mb-0">任务文件</label>
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      hidden
+                      onChange={(event) => handleFileChange(event.target.files)}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-outline-primary btn-sm"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      {attachmentUploading ? '上传中...' : '+ 上传文件'}
+                    </button>
+                  </>
+                </div>
+
+                {attachmentsLoading ? (
+                  <div className="text-muted small">正在加载文件...</div>
+                ) : attachments.length > 0 ? (
+                  <div className="attachment-list">
+                    {attachments.map((attachment) => (
+                      <article key={attachment.id} className="attachment-item">
+                        <div className="attachment-main">
+                          <strong>{attachment.original_name}</strong>
+                          <span>{attachment.mime_type} · {Math.max(1, Math.round(attachment.size_bytes / 1024))} KB</span>
+                        </div>
+                        <div className="attachment-actions">
+                          <select
+                            className="form-select form-select-sm app-attachment-task-select"
+                            value={attachment.task_id || ''}
+                            onChange={(event) => handleAssignAttachment(attachment.id, event.target.value)}
+                          >
+                            <option value="">不关联任务</option>
+                            {projectTasks.map((projectTask) => (
+                              <option key={projectTask.id} value={projectTask.id}>{projectTask.name}</option>
+                            ))}
+                          </select>
+                          <a
+                            className="btn btn-outline-secondary btn-sm"
+                            href={projectAttachmentsApi.downloadUrl(project.id, attachment.id)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            下载
+                          </a>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-muted small">暂无文件</div>
+                )}
+              </div>
+            )}
           </div>
           <div className="modal-footer app-modal-footer">
             {task && (

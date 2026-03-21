@@ -2,6 +2,8 @@ export interface Project {
   id: string;
   name: string;
   description: string;
+  owner: string;
+  start_date: string;
   color: string;
   created_at: string;
   updated_at: string;
@@ -12,6 +14,7 @@ export interface Task {
   project_id: string;
   name: string;
   description: string;
+  owner: string;
   start_date: string;
   end_date: string;
   progress: number;
@@ -27,6 +30,8 @@ export interface Task {
 export interface ProjectAttachment {
   id: string;
   project_id: string;
+  task_id: string;
+  task_name?: string;
   original_name: string;
   stored_name: string;
   relative_path: string;
@@ -39,12 +44,16 @@ export interface ProjectAttachment {
 export interface CreateProjectDto {
   name: string;
   description?: string;
+  owner?: string;
+  start_date?: string;
   color?: string;
 }
 
 export interface UpdateProjectDto {
   name?: string;
   description?: string;
+  owner?: string;
+  start_date?: string;
   color?: string;
 }
 
@@ -52,6 +61,7 @@ export interface CreateTaskDto {
   project_id: string;
   name: string;
   description?: string;
+  owner?: string;
   start_date: string;
   end_date: string;
   progress?: number;
@@ -63,6 +73,7 @@ export interface CreateTaskDto {
 export interface UpdateTaskDto {
   name?: string;
   description?: string;
+  owner?: string;
   start_date?: string;
   end_date?: string;
   progress?: number;

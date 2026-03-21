@@ -130,9 +130,12 @@ export const wechatApi = {
 
 export const projectAttachmentsApi = {
   list: (projectId: string) => fetchApi<ProjectAttachment[]>(`/api/project-attachments/${projectId}/list`),
-  upload: (projectId: string, files: File[]) => {
+  upload: (projectId: string, files: File[], taskId?: string) => {
     const formData = new FormData();
     files.forEach((file) => formData.append('files', file));
+    if (taskId) {
+      formData.append('task_id', taskId);
+    }
 
     return fetchFormData<ProjectAttachment[]>(`/api/project-attachments/${projectId}/upload`, {
       method: 'POST',
@@ -140,6 +143,10 @@ export const projectAttachmentsApi = {
     });
   },
   downloadUrl: (projectId: string, attachmentId: string) => `${API_BASE}/api/project-attachments/${projectId}/download/${attachmentId}`,
+  assignTask: (projectId: string, attachmentId: string, taskId?: string) => fetchApi<ProjectAttachment>(`/api/project-attachments/${projectId}/assign/${attachmentId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ task_id: taskId || '' }),
+  }),
   remove: (projectId: string, attachmentId: string) => fetchApi<void>(`/api/project-attachments/${projectId}/delete/${attachmentId}`, {
     method: 'DELETE',
   }),
