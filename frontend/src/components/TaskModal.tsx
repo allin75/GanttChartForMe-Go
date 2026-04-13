@@ -62,8 +62,8 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
 
       try {
         setAttachmentsLoading(true);
-        const data = await projectAttachmentsApi.list(project.id);
-        setAttachments(data.filter((attachment) => attachment.task_id === task.id));
+        const data = await projectAttachmentsApi.listByTask(project.id, task.id);
+        setAttachments(data);
       } finally {
         setAttachmentsLoading(false);
       }
@@ -72,7 +72,7 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
     loadAttachments();
   }, [project.id, task]);
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (keepOpenForNext = false) => {
     try {
       setErrorMessage('');
       if (task) {
@@ -82,11 +82,54 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
       }
 
       await onSave();
+
+      if (keepOpenForNext) {
+        setFormData(buildDefaultTaskForm(project));
+        setAttachments([]);
+        return;
+      }
+
       onClose();
     } catch (error) {
       console.error('Failed to save task:', error);
       setErrorMessage(error instanceof Error ? error.message : '保存任务失败');
     }
+  };
+
+  const handleDuplicateTask = async () => {
+    if (!task) {
+      return;
+    }
+
+    try {
+      setErrorMessage('');
+      const duplicated: CreateTaskDto = {
+        project_id: project.id,
+        name: `${formData.name || task.name}（副本）`,
+        description: formData.description || task.description,
+        owner: formData.owner || task.owner,
+        start_date: formData.start_date || task.start_date,
+        end_date: formData.end_date || task.end_date,
+        progress: formData.progress || task.progress,
+        color: formData.color || task.color,
+        parent_id: formData.parent_id,
+        dependencies: formData.dependencies || task.dependencies,
+      };
+      await tasksApi.create(duplicated);
+      await onSave();
+      onClose();
+    } catch (error) {
+      console.error('Failed to duplicate task:', error);
+      setErrorMessage(error instanceof Error ? error.message : '复制任务失败');
+    }
+  };
+
+  const handleSaveAndCreateNext = async () => {
+    if (task) {
+      return;
+    }
+
+    await handleSubmit(true);
   };
 
   const handleDelete = async () => {
@@ -116,8 +159,8 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
       setErrorMessage('');
       setAttachmentUploading(true);
       await projectAttachmentsApi.upload(project.id, Array.from(files), task.id);
-      const data = await projectAttachmentsApi.list(project.id);
-      setAttachments(data.filter((attachment) => attachment.task_id === task.id));
+      const data = await projectAttachmentsApi.listByTask(project.id, task.id);
+      setAttachments(data);
     } catch (error) {
       console.error('Failed to upload task attachments:', error);
       setErrorMessage(error instanceof Error ? error.message : '上传文件失败');
@@ -130,8 +173,8 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
     try {
       setErrorMessage('');
       await projectAttachmentsApi.assignTask(project.id, attachmentId, taskId || undefined);
-      const data = await projectAttachmentsApi.list(project.id);
-      setAttachments(data.filter((attachment) => attachment.task_id === task?.id));
+      const data = task ? await projectAttachmentsApi.listByTask(project.id, task.id) : [];
+      setAttachments(data);
     } catch (error) {
       console.error('Failed to update attachment task relation:', error);
       setErrorMessage(error instanceof Error ? error.message : '更新文件关联失败');
@@ -142,6 +185,7 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
     Boolean(formData.start_date) &&
     Boolean(formData.end_date) &&
     (formData.start_date as string) > (formData.end_date as string);
+  const availableTaskOptions = projectTasks.filter((projectTask) => projectTask.id !== task?.id);
 
   return (
     <div className="modal show d-block app-modal-backdrop">
@@ -152,17 +196,31 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
             <button type="button" className="btn-close" onClick={onClose} />
           </div>
           <div className="modal-body app-modal-body">
-            <div className="task-modal-project-badge" style={{ backgroundColor: project.color }}>
-              {project.name}
+            <div className="task-modal-topbar">
+              <div className="task-modal-project-badge" style={{ backgroundColor: project.color }}>
+                {project.name}
+              </div>
+              {task && <div className="task-modal-secondary-text">ID: {task.id.slice(0, 8)}</div>}
             </div>
-            <div className="mb-3">
-              <label className="form-label">任务名称 *</label>
-              <input
-                type="text"
-                className="form-control app-form-control"
-                value={formData.name || ''}
-                onChange={(event) => setFormData({ ...formData, name: event.target.value })}
-              />
+            <div className="task-modal-grid task-modal-grid-primary mb-3">
+              <div>
+                <label className="form-label">任务名称 *</label>
+                <input
+                  type="text"
+                  className="form-control app-form-control"
+                  value={formData.name || ''}
+                  onChange={(event) => setFormData({ ...formData, name: event.target.value })}
+                />
+              </div>
+              <div>
+                <label className="form-label">负责人</label>
+                <input
+                  type="text"
+                  className="form-control app-form-control"
+                  value={formData.owner || ''}
+                  onChange={(event) => setFormData({ ...formData, owner: event.target.value })}
+                />
+              </div>
             </div>
             <div className="mb-3">
               <label className="form-label">描述</label>
@@ -173,16 +231,7 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
                 onChange={(event) => setFormData({ ...formData, description: event.target.value })}
               />
             </div>
-            <div className="mb-3">
-              <label className="form-label">负责人</label>
-              <input
-                type="text"
-                className="form-control app-form-control"
-                value={formData.owner || ''}
-                onChange={(event) => setFormData({ ...formData, owner: event.target.value })}
-              />
-            </div>
-            <div className="row mb-3">
+            <div className="row mb-3 task-modal-grid-secondary">
               <div className="col">
                 <label className="form-label">开始日期 *</label>
                 <input
@@ -213,7 +262,10 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
               </div>
             )}
             <div className="mb-3">
-              <label className="form-label">进度: {formData.progress || 0}%</label>
+              <div className="task-modal-inline-label">
+                <label className="form-label mb-0">进度</label>
+                <span>{formData.progress || 0}%</span>
+              </div>
               <input
                 type="range"
                 className="form-range"
@@ -224,7 +276,9 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
               />
             </div>
             <div className="mb-3">
-              <label className="form-label">颜色</label>
+              <div className="task-modal-inline-label">
+                <label className="form-label mb-0">颜色</label>
+              </div>
               <div className="color-picker">
                 {TASK_COLORS.map((color) => (
                   <button
@@ -238,9 +292,44 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
               </div>
             </div>
 
+            <div className="task-modal-grid task-modal-grid-primary mb-3">
+              <div>
+                <label className="form-label">父任务</label>
+                <select
+                  className="form-select app-form-control"
+                  value={formData.parent_id || ''}
+                  onChange={(event) => setFormData({
+                    ...formData,
+                    parent_id: event.target.value || undefined,
+                  })}
+                >
+                  <option value="">无</option>
+                  {availableTaskOptions.map((projectTask) => (
+                    <option key={projectTask.id} value={projectTask.id}>{projectTask.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="form-label">依赖任务</label>
+                <select
+                  multiple
+                  className="form-select app-form-control task-modal-multi-select"
+                  value={formData.dependencies || []}
+                  onChange={(event) => {
+                    const values = Array.from(event.target.selectedOptions).map((option) => option.value);
+                    setFormData({ ...formData, dependencies: values });
+                  }}
+                >
+                  {availableTaskOptions.map((projectTask) => (
+                    <option key={projectTask.id} value={projectTask.id}>{projectTask.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
             {task && (
-              <div className="mt-4">
-                <div className="d-flex justify-content-between align-items-center mb-3 gap-3">
+              <div className="task-modal-files-panel mt-4">
+                <div className="d-flex justify-content-between align-items-center mb-2 gap-3">
                   <label className="form-label mb-0">任务文件</label>
                   <>
                     <input
@@ -305,11 +394,26 @@ const TaskModal: React.FC<TaskModalProps> = ({ task, project, projectTasks = [],
                 删除
               </button>
             )}
+            {task && (
+              <button type="button" className="btn btn-outline-secondary" onClick={handleDuplicateTask}>
+                复制任务
+              </button>
+            )}
             <button type="button" className="btn btn-secondary" onClick={onClose}>取消</button>
+            {!task && (
+              <button
+                type="button"
+                className="btn btn-outline-primary"
+                onClick={handleSaveAndCreateNext}
+                disabled={!formData.name?.trim() || !formData.start_date || !formData.end_date || isInvalidDateRange}
+              >
+                保存并继续
+              </button>
+            )}
             <button
               type="button"
               className="btn btn-primary"
-              onClick={handleSubmit}
+              onClick={() => handleSubmit(false)}
               disabled={!formData.name?.trim() || !formData.start_date || !formData.end_date || isInvalidDateRange}
             >
               {task ? '保存' : '创建'}

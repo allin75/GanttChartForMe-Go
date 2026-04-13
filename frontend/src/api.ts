@@ -130,6 +130,7 @@ export const wechatApi = {
 
 export const projectAttachmentsApi = {
   list: (projectId: string) => fetchApi<ProjectAttachment[]>(`/api/project-attachments/${projectId}/list`),
+  listByTask: (projectId: string, taskId: string) => fetchApi<ProjectAttachment[]>(`/api/project-attachments/${projectId}/task/${taskId}`),
   upload: (projectId: string, files: File[], taskId?: string) => {
     const formData = new FormData();
     files.forEach((file) => formData.append('files', file));

@@ -577,6 +577,34 @@ func (s *store) listProjectAttachments(projectID string) []ProjectAttachment {
 	return attachments
 }
 
+func (s *store) listTaskAttachments(projectID string, taskID string) ([]ProjectAttachment, error) {
+	trimmedTaskID := strings.TrimSpace(taskID)
+	if trimmedTaskID == "" {
+		return []ProjectAttachment{}, nil
+	}
+	rows, err := s.db.Query(`
+		SELECT a.id, a.project_id, a.task_id, COALESCE(t.name, ''), a.original_name, a.stored_name, a.relative_path, a.mime_type, a.size_bytes, a.created_at, a.updated_at
+		FROM project_attachments a
+		LEFT JOIN tasks t ON t.id = a.task_id
+		WHERE a.project_id = ? AND a.task_id = ?
+		ORDER BY a.created_at DESC
+	`, projectID, trimmedTaskID)
+	if err != nil {
+		return []ProjectAttachment{}, err
+	}
+	defer rows.Close()
+
+	attachments := []ProjectAttachment{}
+	for rows.Next() {
+		var attachment ProjectAttachment
+		if err := rows.Scan(&attachment.ID, &attachment.ProjectID, &attachment.TaskID, &attachment.TaskName, &attachment.OriginalName, &attachment.StoredName, &attachment.RelativePath, &attachment.MimeType, &attachment.SizeBytes, &attachment.CreatedAt, &attachment.UpdatedAt); err != nil {
+			return []ProjectAttachment{}, err
+		}
+		attachments = append(attachments, attachment)
+	}
+	return attachments, nil
+}
+
 func (s *store) createProjectAttachments(projectID string, taskID string, headers []*multipart.FileHeader) ([]ProjectAttachment, error) {
 	if len(headers) == 0 {
 		return []ProjectAttachment{}, errors.New("at least one file is required")
@@ -745,6 +773,7 @@ func (s *store) createTask(input taskPayload) (Task, error) {
 		ProjectID:    input.ProjectID,
 		Name:         name,
 		Description:  stringValue(input.Description, ""),
+		Owner:        stringValue(input.Owner, ""),
 		StartDate:    input.StartDate,
 		EndDate:      input.EndDate,
 		Progress:     intValue(input.Progress, 0),
@@ -774,10 +803,10 @@ func (s *store) createTask(input taskPayload) (Task, error) {
 
 		_, err = tx.Exec(`
 			INSERT INTO tasks (
-				id, project_id, name, description, start_date, end_date,
+				id, project_id, name, description, owner, start_date, end_date,
 				progress, color, parent_id, dependencies, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, task.ID, task.ProjectID, task.Name, task.Description, task.StartDate, task.EndDate,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, task.ID, task.ProjectID, task.Name, task.Description, task.Owner, task.StartDate, task.EndDate,
 			task.Progress, task.Color, task.ParentID, dependenciesJSON, task.CreatedAt, task.UpdatedAt)
 		return err
 	}); err != nil {
@@ -802,6 +831,9 @@ func (s *store) updateTask(id string, input taskPayload) (Task, error) {
 	}
 	if input.Description != nil {
 		task.Description = *input.Description
+	}
+	if input.Owner != nil {
+		task.Owner = *input.Owner
 	}
 	if input.StartDate != "" {
 		task.StartDate = input.StartDate
@@ -839,10 +871,10 @@ func (s *store) updateTask(id string, input taskPayload) (Task, error) {
 
 	_, err = s.db.Exec(`
 		UPDATE tasks
-		SET name = ?, description = ?, start_date = ?, end_date = ?, progress = ?,
+		SET name = ?, description = ?, owner = ?, start_date = ?, end_date = ?, progress = ?,
 			color = ?, parent_id = ?, dependencies = ?, updated_at = ?
 		WHERE id = ?
-	`, task.Name, task.Description, task.StartDate, task.EndDate, task.Progress,
+	`, task.Name, task.Description, task.Owner, task.StartDate, task.EndDate, task.Progress,
 		task.Color, task.ParentID, dependenciesJSON, task.UpdatedAt, id)
 	if err != nil {
 		return Task{}, err
@@ -1889,6 +1921,16 @@ func (s *server) handleProjectAttachments(w http.ResponseWriter, r *http.Request
 
 	if action == "list" && r.Method == http.MethodGet {
 		writeJSON(w, http.StatusOK, s.store.listProjectAttachments(projectID))
+		return
+	}
+
+	if action == "task" && len(parts) == 3 && r.Method == http.MethodGet {
+		attachments, err := s.store.listTaskAttachments(projectID, parts[2])
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load task attachments")
+			return
+		}
+		writeJSON(w, http.StatusOK, attachments)
 		return
 	}
 

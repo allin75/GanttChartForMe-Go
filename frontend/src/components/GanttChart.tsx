@@ -48,6 +48,9 @@ const VIEW_MODE_LABELS: Record<ViewMode, string> = {
 
 const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClick, showProjectName = false }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('week');
+  const [showUnfinishedOnly, setShowUnfinishedOnly] = useState(false);
+  const [showRiskOnly, setShowRiskOnly] = useState(false);
+  const [ownerFilter, setOwnerFilter] = useState('');
   const [dragging, setDragging] = useState<DragState | null>(null);
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
   const [hoveredTask, setHoveredTask] = useState<Task | null>(null);
@@ -56,8 +59,23 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
   const ganttContainerRef = useRef<HTMLDivElement | null>(null);
   const didAutoScrollRef = useRef(false);
 
+  const filteredTasks = tasks.filter((task) => {
+    if (showUnfinishedOnly && task.progress >= 100) {
+      return false;
+    }
+    if (showRiskOnly && !(task.progress < 100 && new Date(task.end_date).getTime() < Date.now())) {
+      return false;
+    }
+    if (ownerFilter && task.owner !== ownerFilter) {
+      return false;
+    }
+    return true;
+  });
+
+  const availableOwners = Array.from(new Set(tasks.map((task) => task.owner).filter(Boolean)));
+
   const getDateRange = useCallback(() => {
-    if (tasks.length === 0) {
+    if (filteredTasks.length === 0) {
       const today = new Date();
       return {
         start: startOfWeek(today, { weekStartsOn: 1 }),
@@ -65,7 +83,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
       };
     }
 
-    const dates = tasks.flatMap((task) => [new Date(task.start_date), new Date(task.end_date)]);
+    const dates = filteredTasks.flatMap((task) => [new Date(task.start_date), new Date(task.end_date)]);
     const minDate = new Date(Math.min(...dates.map((date) => date.getTime())));
     const maxDate = new Date(Math.max(...dates.map((date) => date.getTime())));
 
@@ -73,7 +91,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
       start: startOfWeek(addDays(minDate, -7), { weekStartsOn: 1 }),
       end: addDays(maxDate, 14),
     };
-  }, [tasks]);
+  }, [filteredTasks]);
 
   const { start: rangeStart, end: rangeEnd } = getDateRange();
   const days = eachDayOfInterval({ start: rangeStart, end: rangeEnd });
@@ -118,7 +136,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
 
   useEffect(() => {
     didAutoScrollRef.current = false;
-  }, [tasks.length, viewMode, rangeStart.getTime(), rangeEnd.getTime()]);
+  }, [filteredTasks.length, viewMode, rangeStart.getTime(), rangeEnd.getTime()]);
 
   useEffect(() => {
     if (!ganttContainerRef.current || days.length === 0 || didAutoScrollRef.current) {
@@ -375,6 +393,32 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
           <h3 className="gantt-toolbar-title">任务排期面板</h3>
         </div>
         <div className="gantt-toolbar-actions">
+          <div className="gantt-filter-bar">
+            <button
+              type="button"
+              className={`task-filter-chip ${showUnfinishedOnly ? 'active' : ''}`}
+              onClick={() => setShowUnfinishedOnly((current) => !current)}
+            >
+              未完成
+            </button>
+            <button
+              type="button"
+              className={`task-filter-chip ${showRiskOnly ? 'active' : ''}`}
+              onClick={() => setShowRiskOnly((current) => !current)}
+            >
+              风险任务
+            </button>
+            <select
+              className="form-select form-select-sm app-attachment-task-select gantt-owner-select"
+              value={ownerFilter}
+              onChange={(event) => setOwnerFilter(event.target.value)}
+            >
+              <option value="">全部负责人</option>
+              {availableOwners.map((owner) => (
+                <option key={owner} value={owner}>{owner}</option>
+              ))}
+            </select>
+          </div>
           <button
             type="button"
             className="btn btn-sm btn-outline-primary gantt-focus-button"
@@ -424,7 +468,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
               ))}
             </div>
 
-            {tasks.map((task, index) => {
+            {filteredTasks.map((task, index) => {
               const { left, width } = getTaskPosition(task);
               const weekendSegments = getWeekendSegments(task);
               const isDraggingTask = dragPreview?.taskId === task.id;

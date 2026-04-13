@@ -6,6 +6,8 @@ interface ProjectListProps {
   loading: boolean;
   selectedProjectId: string | null;
   showAllTasks: boolean;
+  recentProjectIds: string[];
+  projectTaskStats: Map<string, { taskCount: number; riskCount: number }>;
   onSelectProject: (project: Project | null) => void;
   onSelectAllTasks: () => void;
   onRefresh: () => Promise<void>;
@@ -17,6 +19,8 @@ interface ProjectListProps {
 const DEFAULT_PROJECT_FORM: CreateProjectDto = {
   name: '',
   description: '',
+  owner: '',
+  start_date: '',
   color: '#4A90D9',
 };
 
@@ -27,6 +31,8 @@ const ProjectList: React.FC<ProjectListProps> = ({
   loading,
   selectedProjectId,
   showAllTasks,
+  recentProjectIds,
+  projectTaskStats,
   onSelectProject,
   onSelectAllTasks,
   onRefresh,
@@ -37,6 +43,17 @@ const ProjectList: React.FC<ProjectListProps> = ({
   const [showModal, setShowModal] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [formData, setFormData] = useState<CreateProjectDto>(DEFAULT_PROJECT_FORM);
+  const [search, setSearch] = useState('');
+
+  const filteredProjects = projects.filter((project) => {
+    const query = search.trim().toLowerCase();
+    if (!query) {
+      return true;
+    }
+    return [project.name, project.description, project.owner]
+      .filter(Boolean)
+      .some((value) => value.toLowerCase().includes(query));
+  });
 
   const resetForm = () => {
     setFormData(DEFAULT_PROJECT_FORM);
@@ -92,6 +109,8 @@ const ProjectList: React.FC<ProjectListProps> = ({
     setFormData({
       name: project.name,
       description: project.description,
+      owner: project.owner,
+      start_date: project.start_date,
       color: project.color,
     });
     setShowModal(true);
@@ -110,16 +129,26 @@ const ProjectList: React.FC<ProjectListProps> = ({
         </button>
       </div>
 
+      <div className="project-list-search px-3 pt-3">
+        <input
+          type="text"
+          className="form-control app-form-control"
+          placeholder="搜索项目 / 负责人"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+      </div>
+
       {loading ? (
         <div className="project-list-state text-center p-3">
           <div className="spinner-border spinner-border-sm" role="status" />
         </div>
-      ) : projects.length === 0 ? (
-        <div className="project-list-state text-center text-muted p-3">
-          暂无项目，点击上方按钮创建。
-        </div>
-      ) : (
-        <div className="project-items">
+        ) : filteredProjects.length === 0 ? (
+          <div className="project-list-state text-center text-muted p-3">
+          没有匹配项目。
+          </div>
+        ) : (
+          <div className="project-items">
           <div
             className={`project-item all-tasks ${showAllTasks ? 'active' : ''}`}
             onClick={onSelectAllTasks}
@@ -132,7 +161,10 @@ const ProjectList: React.FC<ProjectListProps> = ({
             <span className="project-item-indicator">总览</span>
           </div>
 
-          {projects.map((project) => (
+          {filteredProjects.map((project) => {
+            const stats = projectTaskStats.get(project.id) || { taskCount: 0, riskCount: 0 };
+            const isRecent = recentProjectIds.includes(project.id);
+            return (
             <div
               key={project.id}
               className={`project-item ${selectedProjectId === project.id ? 'active' : ''}`}
@@ -142,6 +174,15 @@ const ProjectList: React.FC<ProjectListProps> = ({
               <div className="project-info">
                 <div className="project-name">{project.name}</div>
                 {project.description && <div className="project-desc">{project.description}</div>}
+                <div className="project-desc">
+                  {project.owner ? `负责人：${project.owner}` : '负责人：-'}
+                  {project.start_date ? ` · 开始：${project.start_date}` : ''}
+                </div>
+                <div className="project-desc project-desc-metrics">
+                  <span>任务 {stats.taskCount}</span>
+                  <span>风险 {stats.riskCount}</span>
+                  {isRecent && <span>最近访问</span>}
+                </div>
               </div>
               <span className="project-item-indicator">项目</span>
               <div className="project-actions">
@@ -165,7 +206,7 @@ const ProjectList: React.FC<ProjectListProps> = ({
                 </button>
               </div>
             </div>
-          ))}
+          )})}
         </div>
       )}
 
@@ -195,6 +236,26 @@ const ProjectList: React.FC<ProjectListProps> = ({
                     value={formData.description}
                     onChange={(event) => setFormData({ ...formData, description: event.target.value })}
                   />
+                </div>
+                <div className="row mb-3">
+                  <div className="col">
+                    <label className="form-label">负责人</label>
+                    <input
+                      type="text"
+                      className="form-control app-form-control"
+                      value={formData.owner || ''}
+                      onChange={(event) => setFormData({ ...formData, owner: event.target.value })}
+                    />
+                  </div>
+                  <div className="col">
+                    <label className="form-label">开始时间</label>
+                    <input
+                      type="date"
+                      className="form-control app-form-control"
+                      value={formData.start_date || ''}
+                      onChange={(event) => setFormData({ ...formData, start_date: event.target.value })}
+                    />
+                  </div>
                 </div>
                 <div className="mb-3">
                   <label className="form-label">颜色</label>

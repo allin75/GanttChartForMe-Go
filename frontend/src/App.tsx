@@ -5,13 +5,14 @@ import ProjectList from './components/ProjectList';
 import GanttChart from './components/GanttChart';
 import TaskModal from './components/TaskModal';
 import AuthScreen from './components/AuthScreen';
-import WeChatBindingCard from './components/WeChatBindingCard';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './App.css';
 
 type TaskViewMode = 'project' | 'all' | 'idle';
 type AuthViewState = 'checking' | 'setup' | 'login' | 'authenticated';
-type AppModule = 'dashboard' | 'project-center' | 'task-management' | 'gantt' | 'team-collaboration' | 'integrations' | 'settings';
+type AppModule = 'project-center' | 'task-management' | 'gantt';
+type TaskQuickFilter = 'overdue' | 'this-week' | 'unassigned' | 'mine' | 'with-files';
+type TaskSortMode = 'risk' | 'due' | 'updated' | 'progress';
 
 interface AppModuleDefinition {
   id: AppModule;
@@ -23,55 +24,35 @@ interface AppModuleDefinition {
 
 const APP_MODULES: AppModuleDefinition[] = [
   {
-    id: 'dashboard',
-    label: 'Dashboard',
-    kicker: 'overview hub',
-    title: '运营总览',
-    icon: '◫',
-  },
-  {
     id: 'project-center',
-    label: 'Project Center',
-    kicker: 'portfolio control',
+    label: '项目',
+    kicker: 'project center',
     title: '项目中心',
     icon: '◎',
   },
   {
     id: 'task-management',
-    label: 'Task Management',
-    kicker: 'delivery queue',
+    label: '任务',
+    kicker: 'task queue',
     title: '任务管理',
     icon: '▣',
   },
   {
     id: 'gantt',
-    label: 'Gantt',
-    kicker: 'timeline studio',
+    label: '甘特图',
+    kicker: 'timeline',
     title: '甘特排期',
     icon: '◭',
   },
-  {
-    id: 'team-collaboration',
-    label: 'Team Collaboration',
-    kicker: 'alignment space',
-    title: '团队协作',
-    icon: '◌',
-  },
-  {
-    id: 'integrations',
-    label: 'Integrations',
-    kicker: 'connected systems',
-    title: '集成中心',
-    icon: '⬡',
-  },
-  {
-    id: 'settings',
-    label: 'Settings',
-    kicker: 'workspace config',
-    title: '系统设置',
-    icon: '✦',
-  },
 ];
+
+const STORAGE_KEYS = {
+  activeModule: 'gantt.activeModule',
+  selectedProjectId: 'gantt.selectedProjectId',
+  showAllTasks: 'gantt.showAllTasks',
+  activeTaskFilters: 'gantt.activeTaskFilters',
+  taskSortMode: 'gantt.taskSortMode',
+} as const;
 
 const formatTaskDate = (value: string) => {
   const date = new Date(value);
@@ -90,9 +71,13 @@ const App: React.FC = () => {
   const [authView, setAuthView] = useState<AuthViewState>('checking');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [activeModule, setActiveModule] = useState<AppModule>('dashboard');
+  const [currentUsername, setCurrentUsername] = useState('');
+  const [activeModule, setActiveModule] = useState<AppModule>(() => {
+    const stored = window.localStorage.getItem(STORAGE_KEYS.activeModule) as AppModule | null;
+    return stored || 'project-center';
+  });
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
-  const [showAllTasks, setShowAllTasks] = useState(false);
+  const [showAllTasks, setShowAllTasks] = useState(() => window.localStorage.getItem(STORAGE_KEYS.showAllTasks) === 'true');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
@@ -105,6 +90,13 @@ const App: React.FC = () => {
   const [attachmentsLoading, setAttachmentsLoading] = useState(false);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
   const projectFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [activeTaskFilters, setActiveTaskFilters] = useState<TaskQuickFilter[]>(() => {
+    const raw = window.localStorage.getItem(STORAGE_KEYS.activeTaskFilters);
+    return raw ? JSON.parse(raw) : [];
+  });
+  const [taskSortMode, setTaskSortMode] = useState<TaskSortMode>(() => {
+    return (window.localStorage.getItem(STORAGE_KEYS.taskSortMode) as TaskSortMode | null) || 'risk';
+  });
   const [wechatForm, setWechatForm] = useState({
     openId: '',
     displayName: '',
@@ -126,13 +118,16 @@ const App: React.FC = () => {
   const handleUnauthorized = useCallback(() => {
     setAuthView('login');
     setAuthError('登录状态已失效，请重新登录。');
-    setActiveModule('dashboard');
+    setActiveModule('project-center');
     setSelectedProject(null);
     setShowAllTasks(false);
     setTasks([]);
     setProjects([]);
     setShowTaskModal(false);
     setEditingTask(null);
+    setCurrentUsername('');
+    setActiveTaskFilters([]);
+    setTaskSortMode('risk');
     setProjectAttachments([]);
     setWechatBindingStatus(null);
     setWechatForm({ openId: '', displayName: '', avatarUrl: '' });
@@ -165,6 +160,7 @@ const App: React.FC = () => {
         return;
       }
 
+      setCurrentUsername(status.user?.username || '');
       setAuthView(status.authenticated ? 'authenticated' : 'login');
     } catch (error) {
       setAuthError(resolveApiError(error, '无法检查登录状态，请稍后再试。'));
@@ -282,6 +278,50 @@ const App: React.FC = () => {
   }, [authView, loadProjects, loadWeChatBindingStatus]);
 
   useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.activeModule, activeModule);
+  }, [activeModule]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.showAllTasks, String(showAllTasks));
+  }, [showAllTasks]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.activeTaskFilters, JSON.stringify(activeTaskFilters));
+  }, [activeTaskFilters]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.taskSortMode, taskSortMode);
+  }, [taskSortMode]);
+
+  useEffect(() => {
+    if (selectedProject?.id) {
+      window.localStorage.setItem(STORAGE_KEYS.selectedProjectId, selectedProject.id);
+      return;
+    }
+    window.localStorage.removeItem(STORAGE_KEYS.selectedProjectId);
+  }, [selectedProject]);
+
+  useEffect(() => {
+    if (!projects.length || selectedProject || showAllTasks) {
+      return;
+    }
+    const storedProjectId = window.localStorage.getItem(STORAGE_KEYS.selectedProjectId);
+    if (!storedProjectId) {
+      return;
+    }
+    const matchedProject = projects.find((project) => project.id === storedProjectId);
+    if (matchedProject) {
+      setSelectedProject(matchedProject);
+    }
+  }, [projects, selectedProject, showAllTasks]);
+
+  useEffect(() => {
+    if (showAllTasks) {
+      window.localStorage.removeItem(STORAGE_KEYS.selectedProjectId);
+    }
+  }, [showAllTasks]);
+
+  useEffect(() => {
     if (authView !== 'authenticated') {
       setTasks([]);
       setProjectAttachments([]);
@@ -306,9 +346,11 @@ const App: React.FC = () => {
       setAuthError(null);
 
       if (authView === 'setup') {
-	        await authApi.setup(payload as AuthSetupPayload);
+	        const result = await authApi.setup(payload as AuthSetupPayload);
+	        setCurrentUsername(result.user?.username || (payload as AuthSetupPayload).username || '');
       } else {
-	        await authApi.login(payload as AuthLoginPayload);
+	        const result = await authApi.login(payload as AuthLoginPayload);
+	        setCurrentUsername(result.user?.username || (payload as AuthLoginPayload).username || '');
       }
 
       setAuthView('authenticated');
@@ -461,6 +503,14 @@ const App: React.FC = () => {
     }
   }, [loadProjectAttachments, resolveApiError, selectedProject]);
 
+  const handleLogoutWithConfirm = useCallback(() => {
+    const confirmed = window.confirm('确认退出登录吗？');
+    if (!confirmed) {
+      return;
+    }
+    handleLogout();
+  }, [handleLogout]);
+
   const handleAssignAttachmentTask = useCallback(async (attachmentId: string, taskId: string) => {
     if (!selectedProject) {
       return;
@@ -544,21 +594,128 @@ const App: React.FC = () => {
   const recentProjects = projects.slice(0, 4);
   const visibleTasks = tasks.slice(0, 6);
   const canCreateTask = Boolean(selectedProject && !showAllTasks);
+  const attachmentCountByTask = useMemo(() => {
+    const map = new Map<string, number>();
+    projectAttachments.forEach((attachment) => {
+      if (!attachment.task_id) {
+        return;
+      }
+      map.set(attachment.task_id, (map.get(attachment.task_id) || 0) + 1);
+    });
+    return map;
+  }, [projectAttachments]);
+  const isTaskFilteredIn = useCallback((task: Task) => {
+    if (activeTaskFilters.length === 0) {
+      return true;
+    }
+
+    const today = new Date();
+    const endDate = new Date(task.end_date);
+    const startOfThisWeek = new Date(today);
+    const day = startOfThisWeek.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    startOfThisWeek.setDate(startOfThisWeek.getDate() + mondayOffset);
+    startOfThisWeek.setHours(0, 0, 0, 0);
+    const endOfThisWeek = new Date(startOfThisWeek);
+    endOfThisWeek.setDate(endOfThisWeek.getDate() + 6);
+    endOfThisWeek.setHours(23, 59, 59, 999);
+
+    return activeTaskFilters.every((filter) => {
+      switch (filter) {
+        case 'overdue':
+          return task.progress < 100 && endDate.getTime() < today.getTime();
+        case 'this-week':
+          return endDate >= startOfThisWeek && endDate <= endOfThisWeek;
+        case 'unassigned':
+          return !task.owner?.trim();
+        case 'mine':
+          return Boolean(currentUsername) && task.owner?.trim().toLowerCase() === currentUsername.toLowerCase();
+        case 'with-files':
+          return (attachmentCountByTask.get(task.id) || 0) > 0;
+        default:
+          return true;
+      }
+    });
+  }, [activeTaskFilters, attachmentCountByTask, currentUsername]);
   const selectedProjectTasks = selectedProject
     ? tasks.filter((task) => task.project_id === selectedProject.id)
     : [];
-  const sortedProjectTasks = [...selectedProjectTasks].sort((left, right) => {
+  const filteredTasks = useMemo(() => tasks.filter(isTaskFilteredIn), [isTaskFilteredIn, tasks]);
+  const filteredSelectedProjectTasks = useMemo(() => selectedProjectTasks.filter(isTaskFilteredIn), [isTaskFilteredIn, selectedProjectTasks]);
+  const sortTasks = useCallback((items: Task[]) => {
+    const sorted = [...items];
+    sorted.sort((left, right) => {
+      switch (taskSortMode) {
+        case 'due':
+          return new Date(left.end_date).getTime() - new Date(right.end_date).getTime();
+        case 'updated':
+          return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+        case 'progress':
+          return right.progress - left.progress;
+        case 'risk':
+        default: {
+          const leftRisk = (left.progress < 100 && new Date(left.end_date).getTime() < Date.now()) ? 1 : 0;
+          const rightRisk = (right.progress < 100 && new Date(right.end_date).getTime() < Date.now()) ? 1 : 0;
+          if (leftRisk !== rightRisk) {
+            return rightRisk - leftRisk;
+          }
+          return new Date(left.end_date).getTime() - new Date(right.end_date).getTime();
+        }
+      }
+    });
+    return sorted;
+  }, [taskSortMode]);
+  const sortedProjectTasks = [...filteredSelectedProjectTasks].sort((left, right) => {
     return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
   });
   const recentProjectTasks = sortedProjectTasks.slice(0, 5);
-  const upcomingProjectTasks = [...selectedProjectTasks]
+  const upcomingProjectTasks = [...filteredSelectedProjectTasks]
     .filter((task) => task.progress < 100)
     .sort((left, right) => new Date(left.end_date).getTime() - new Date(right.end_date).getTime())
     .slice(0, 4);
-  const riskProjectTasks = selectedProjectTasks
+  const riskProjectTasks = filteredSelectedProjectTasks
     .filter((task) => task.progress < 100 && new Date(task.end_date).getTime() < Date.now())
     .slice(0, 4);
+  const toggleTaskFilter = useCallback((filter: TaskQuickFilter) => {
+    setActiveTaskFilters((current) => current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]);
+  }, []);
   const ganttReady = Boolean(selectedProject || showAllTasks);
+  const orderedFilteredTasks = useMemo(() => sortTasks(filteredTasks), [filteredTasks, sortTasks]);
+  const actionableAlerts = useMemo(() => {
+    const today = new Date();
+    const overdueTasks = filteredTasks.filter((task) => task.progress < 100 && new Date(task.end_date).getTime() < today.getTime());
+    const soonDueTasks = filteredTasks.filter((task) => {
+      const dueDate = new Date(task.end_date);
+      const diffDays = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      return task.progress < 60 && diffDays >= 0 && diffDays <= 3;
+    });
+    const unassignedTasks = filteredTasks.filter((task) => !task.owner?.trim());
+
+    return { overdueTasks, soonDueTasks, unassignedTasks };
+  }, [filteredTasks]);
+  const recentProjectIds = useMemo(() => {
+    const ids: string[] = [];
+    if (selectedProject?.id) {
+      ids.push(selectedProject.id);
+    }
+    recentProjects.forEach((project) => {
+      if (!ids.includes(project.id)) {
+        ids.push(project.id);
+      }
+    });
+    return ids.slice(0, 5);
+  }, [recentProjects, selectedProject]);
+  const projectTaskStats = useMemo(() => {
+    const stats = new Map<string, { taskCount: number; riskCount: number }>();
+    projects.forEach((project) => {
+      const projectTasks = tasks.filter((task) => task.project_id === project.id);
+      stats.set(project.id, {
+        taskCount: projectTasks.length,
+        riskCount: projectTasks.filter((task) => task.progress < 100 && new Date(task.end_date).getTime() < Date.now()).length,
+      });
+    });
+    return stats;
+  }, [projects, tasks]);
 
   const renderContextEmpty = (icon: string, title: string, actionLabel?: string, onAction?: () => void) => (
     <div className="module-empty-state">
@@ -574,7 +731,7 @@ const App: React.FC = () => {
 
   const renderDashboardModule = () => (
     <div className="module-stack">
-      <section className="app-hero-card app-platform-hero">
+      <section className="app-hero-card app-platform-hero app-dashboard-secondary-shell">
         <div className="app-platform-hero-copy">
           <span className="app-section-kicker">Program Shell</span>
           <h3 className="app-hero-title">项目管理工作台</h3>
@@ -608,14 +765,14 @@ const App: React.FC = () => {
         </div>
       </section>
 
-      <section className="module-card">
+      <section className="module-card app-dashboard-secondary-shell">
         <div className="module-card-header">
           <div>
             <span className="app-section-kicker">Module Navigation</span>
             <h3 className="module-card-title">工作台入口</h3>
           </div>
         </div>
-        <div className="module-launch-grid">
+        <div className="module-launch-grid app-dashboard-secondary-shell">
           {APP_MODULES.map((module) => (
             <button
               key={module.id}
@@ -633,7 +790,7 @@ const App: React.FC = () => {
         </div>
       </section>
 
-      <div className="module-two-column-grid">
+      <div className="module-two-column-grid app-dashboard-secondary-shell">
         <section className="module-card">
           <div className="module-card-header">
             <div>
@@ -677,9 +834,9 @@ const App: React.FC = () => {
               打开任务管理
             </button>
           </div>
-          {visibleTasks.length > 0 ? (
-            <div className="task-overview-list">
-              {visibleTasks.map((task) => (
+            {filteredTasks.slice(0, 6).length > 0 ? (
+              <div className="task-overview-list">
+              {filteredTasks.slice(0, 6).map((task) => (
                 <button
                   key={task.id}
                   type="button"
@@ -713,6 +870,8 @@ const App: React.FC = () => {
           loading={projectsLoading}
           selectedProjectId={selectedProject?.id || null}
           showAllTasks={showAllTasks}
+          recentProjectIds={recentProjectIds}
+          projectTaskStats={projectTaskStats}
           onSelectProject={handleSelectProject}
           onSelectAllTasks={handleSelectAllTasks}
           onRefresh={handleRefresh}
@@ -774,13 +933,13 @@ const App: React.FC = () => {
               <div className="project-detail-metrics project-detail-metrics-extended">
                 <div>
                   <span>项目任务</span>
-                  <strong>{selectedProjectTasks.length}</strong>
+                  <strong>{filteredSelectedProjectTasks.length}</strong>
                 </div>
                 <div>
                   <span>完成率</span>
                   <strong>
-                    {selectedProjectTasks.length > 0
-                      ? `${Math.round(selectedProjectTasks.reduce((sum, task) => sum + task.progress, 0) / selectedProjectTasks.length)}%`
+                    {filteredSelectedProjectTasks.length > 0
+                      ? `${Math.round(filteredSelectedProjectTasks.reduce((sum, task) => sum + task.progress, 0) / filteredSelectedProjectTasks.length)}%`
                       : '0%'}
                   </strong>
                 </div>
@@ -811,6 +970,10 @@ const App: React.FC = () => {
                               {task.owner ? `${task.owner} · ` : ''}
                               {task.start_date} - {task.end_date} · {task.progress}%
                             </span>
+                            <span className="dense-task-meta-row">
+                              <em>附件 {attachmentCountByTask.get(task.id) || 0}</em>
+                              <em>{task.progress >= 100 ? '已完成' : task.progress > 0 ? '进行中' : '待启动'}</em>
+                            </span>
                           </span>
                         </button>
                       ))}
@@ -833,6 +996,9 @@ const App: React.FC = () => {
                             <span className="dense-task-copy">
                               <strong>{task.name}</strong>
                               <span>{task.owner ? `${task.owner} · ` : ''}截止 {task.end_date}</span>
+                              <span className="dense-task-meta-row">
+                                <em>附件 {attachmentCountByTask.get(task.id) || 0}</em>
+                              </span>
                             </span>
                           </button>
                         ))}
@@ -854,6 +1020,10 @@ const App: React.FC = () => {
                             <span className="dense-task-copy">
                               <strong>{task.name}</strong>
                               <span>{task.owner ? `${task.owner} · ` : ''}已超过 {task.end_date}</span>
+                              <span className="dense-task-meta-row">
+                                <em>进度 {task.progress}%</em>
+                                <em>附件 {attachmentCountByTask.get(task.id) || 0}</em>
+                              </span>
                             </span>
                           </button>
                         ))}
@@ -951,10 +1121,10 @@ const App: React.FC = () => {
 
   const renderTaskManagementModule = () => (
     <div className="module-stack">
-      <section className="module-card task-management-hero">
-        <div className="module-card-header">
-          <div>
-            <span className="app-section-kicker">Execution Queue</span>
+        <section className="module-card task-management-hero">
+          <div className="module-card-header">
+            <div>
+              <span className="app-section-kicker">Execution Queue</span>
             <h3 className="module-card-title">任务执行面板</h3>
           </div>
           <div className="module-header-actions">
@@ -968,25 +1138,60 @@ const App: React.FC = () => {
             )}
           </div>
         </div>
-        <div className="task-management-summary">
-          <div>
-            <span>当前上下文</span>
-            <strong>{currentContextLabel}</strong>
+          <div className="task-management-summary">
+            <div>
+              <span>当前上下文</span>
+              <strong>{currentContextLabel}</strong>
+            </div>
+            <div>
+              <span>已完成</span>
+              <strong>{filteredTasks.filter((task) => task.progress >= 100).length}</strong>
+            </div>
+            <div>
+              <span>进行中</span>
+              <strong>{filteredTasks.filter((task) => task.progress > 0 && task.progress < 100).length}</strong>
+            </div>
+            <div>
+              <span>待启动</span>
+              <strong>{filteredTasks.filter((task) => task.progress === 0).length}</strong>
+            </div>
           </div>
-          <div>
-            <span>已完成</span>
-            <strong>{completedTaskCount}</strong>
+          <div className="task-filter-bar">
+            {[
+              ['overdue', '逾期'],
+              ['this-week', '本周'],
+              ['unassigned', '无负责人'],
+              ['mine', '我负责'],
+              ['with-files', '有附件'],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`task-filter-chip ${activeTaskFilters.includes(key as TaskQuickFilter) ? 'active' : ''}`}
+                onClick={() => toggleTaskFilter(key as TaskQuickFilter)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          <div>
-            <span>进行中</span>
-            <strong>{inFlightTaskCount}</strong>
+          <div className="task-sort-bar">
+            {[
+              ['risk', '风险优先'],
+              ['due', '按截止'],
+              ['updated', '按更新'],
+              ['progress', '按进度'],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`task-sort-chip ${taskSortMode === key ? 'active' : ''}`}
+                onClick={() => setTaskSortMode(key as TaskSortMode)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          <div>
-            <span>待启动</span>
-            <strong>{idleTaskCount}</strong>
-          </div>
-        </div>
-      </section>
+        </section>
 
       <section className="module-card">
         <div className="module-card-header">
@@ -1003,9 +1208,9 @@ const App: React.FC = () => {
             <div className="spinner-border text-primary" role="status" />
             <p className="mt-3 mb-0">正在加载任务...</p>
           </div>
-        ) : tasks.length > 0 ? (
+        ) : orderedFilteredTasks.length > 0 ? (
           <div className="task-board-list">
-            {tasks.map((task) => (
+            {orderedFilteredTasks.map((task) => (
               <article key={task.id} className="task-board-item">
                 <div className="task-board-accent" style={{ backgroundColor: task.color }} />
                 <div className="task-board-main">
@@ -1019,17 +1224,46 @@ const App: React.FC = () => {
                     </button>
                   </div>
                   <div className="task-board-meta">
+                    <span>负责人：{task.owner || '-'}</span>
                     <span>{showAllTasks && task.project_name ? `项目：${task.project_name}` : `项目：${selectedProject?.name || '当前项目'}`}</span>
                     <span>日期：{task.start_date} - {task.end_date}</span>
                     <span>进度：{task.progress}%</span>
+                    <span>附件：{attachmentCountByTask.get(task.id) || 0}</span>
+                    <span>{task.progress < 100 && new Date(task.end_date).getTime() < Date.now() ? '风险：逾期' : '风险：正常'}</span>
                   </div>
                 </div>
               </article>
             ))}
           </div>
         ) : (
-          renderContextEmpty('▣', '当前没有任务', canCreateTask ? '+ 新建任务' : undefined, canCreateTask ? handleCreateTask : undefined)
+          renderContextEmpty('▣', activeTaskFilters.length > 0 ? '当前筛选下没有任务' : '当前没有任务', canCreateTask ? '+ 新建任务' : undefined, canCreateTask ? handleCreateTask : undefined)
         )}
+      </section>
+
+      <section className="module-card alert-panel-card">
+        <div className="module-card-header">
+          <div>
+            <span className="app-section-kicker">Action Alerts</span>
+            <h3 className="module-card-title">当前提醒</h3>
+          </div>
+        </div>
+        <div className="alert-grid">
+          <article className="alert-card danger">
+            <span className="alert-card-label">逾期</span>
+            <strong>{actionableAlerts.overdueTasks.length}</strong>
+            <p>{actionableAlerts.overdueTasks[0]?.name || '暂无'}</p>
+          </article>
+          <article className="alert-card warning">
+            <span className="alert-card-label">临期低进度</span>
+            <strong>{actionableAlerts.soonDueTasks.length}</strong>
+            <p>{actionableAlerts.soonDueTasks[0]?.name || '暂无'}</p>
+          </article>
+          <article className="alert-card neutral">
+            <span className="alert-card-label">无负责人</span>
+            <strong>{actionableAlerts.unassignedTasks.length}</strong>
+            <p>{actionableAlerts.unassignedTasks[0]?.name || '暂无'}</p>
+          </article>
+        </div>
       </section>
     </div>
   );
@@ -1064,7 +1298,7 @@ const App: React.FC = () => {
             </div>
           ) : tasks.length > 0 ? (
             <GanttChart
-              tasks={tasks}
+              tasks={filteredTasks}
               onTaskUpdate={handleTaskUpdate}
               onTaskClick={handleTaskClick}
               showProjectName={showAllTasks}
@@ -1079,155 +1313,16 @@ const App: React.FC = () => {
     </div>
   );
 
-  const renderTeamModule = () => (
-    <div className="module-stack">
-      <section className="module-card">
-        <div className="module-card-header">
-          <div>
-            <span className="app-section-kicker">Collaboration Layer</span>
-            <h3 className="module-card-title">团队协作舱</h3>
-          </div>
-        </div>
-        <div className="placeholder-grid">
-          <article className="placeholder-card">
-            <span className="placeholder-label">Daily Sync</span>
-            <strong>{selectedProject?.name || '全局项目组合'}</strong>
-          </article>
-          <article className="placeholder-card">
-            <span className="placeholder-label">Review Queue</span>
-            <strong>{inFlightTaskCount} 个进行中项</strong>
-          </article>
-          <article className="placeholder-card">
-            <span className="placeholder-label">Stakeholder Notes</span>
-            <strong>微信接入已{wechatStatusText}</strong>
-          </article>
-        </div>
-      </section>
-
-      <section className="module-card">
-        <div className="module-card-header">
-          <div>
-            <span className="app-section-kicker">Coordination Checklist</span>
-            <h3 className="module-card-title">当前协作建议</h3>
-          </div>
-        </div>
-        <div className="collaboration-list">
-          <div className="collaboration-item">
-            <strong>项目上下文</strong>
-            <span>{currentContextLabel}</span>
-          </div>
-          <div className="collaboration-item">
-            <strong>任务状态</strong>
-            <span>{completedTaskCount} 已完成 / {inFlightTaskCount} 推进中 / {idleTaskCount} 待启动</span>
-          </div>
-          <div className="collaboration-item">
-            <strong>建议动作</strong>
-            <span>甘特 / 任务 / 集成</span>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-
-  const renderIntegrationsModule = () => (
-    <div className="module-stack">
-      <section className="module-card">
-        <div className="module-card-header">
-          <div>
-            <span className="app-section-kicker">Connected Systems</span>
-            <h3 className="module-card-title">集成总览</h3>
-          </div>
-        </div>
-        <div className="placeholder-grid integrations-grid">
-          <article className="placeholder-card">
-            <span className="placeholder-label">Messaging</span>
-            <strong>微信绑定</strong>
-          </article>
-          <article className="placeholder-card">
-            <span className="placeholder-label">Automation</span>
-            <strong>通知自动化</strong>
-          </article>
-          <article className="placeholder-card">
-            <span className="placeholder-label">Data Sync</span>
-            <strong>外部系统</strong>
-          </article>
-        </div>
-      </section>
-
-      <WeChatBindingCard
-        accountLabel="当前浏览器会话"
-        statusText={wechatStatusText}
-        binding={wechatBindingStatus?.binding}
-        pendingAttempt={wechatBindingStatus?.pending_attempt}
-        message={wechatBindingStatus?.message}
-        loading={wechatLoading}
-        bindOpenId={wechatForm.openId}
-        bindDisplayName={wechatForm.displayName}
-        bindAvatarUrl={wechatForm.avatarUrl}
-        onBindOpenIdChange={(value) => setWechatForm((current) => ({ ...current, openId: value }))}
-        onBindDisplayNameChange={(value) => setWechatForm((current) => ({ ...current, displayName: value }))}
-        onBindAvatarUrlChange={(value) => setWechatForm((current) => ({ ...current, avatarUrl: value }))}
-        onStartBinding={handleStartWeChatBinding}
-        onConfirmBinding={handleConfirmWeChatBinding}
-        onRemoveBinding={handleRemoveWeChatBinding}
-      />
-    </div>
-  );
-
-  const renderSettingsModule = () => (
-    <div className="module-stack">
-      <section className="module-card settings-grid-card">
-        <div className="module-card-header">
-          <div>
-            <span className="app-section-kicker">Workspace Settings</span>
-            <h3 className="module-card-title">系统设置面板</h3>
-          </div>
-        </div>
-        <div className="settings-grid">
-          <article className="settings-card">
-            <span className="placeholder-label">Session</span>
-            <strong>访问控制已启用</strong>
-            <button className="btn btn-outline-secondary btn-sm app-action-button" onClick={handleLogout}>
-              退出登录
-            </button>
-          </article>
-          <article className="settings-card">
-            <span className="placeholder-label">Workspace</span>
-            <strong>项目数 {projects.length}</strong>
-            <button className="btn btn-outline-secondary btn-sm app-action-button" onClick={() => setActiveModule('project-center')}>
-              打开项目中心
-            </button>
-          </article>
-          <article className="settings-card">
-            <span className="placeholder-label">Integration Status</span>
-            <strong>微信状态 {wechatStatusText}</strong>
-            <button className="btn btn-outline-secondary btn-sm app-action-button" onClick={() => setActiveModule('integrations')}>
-              查看集成中心
-            </button>
-          </article>
-        </div>
-      </section>
-    </div>
-  );
-
   const renderActiveModule = () => {
     switch (activeModule) {
-      case 'dashboard':
-        return renderDashboardModule();
       case 'project-center':
         return renderProjectCenterModule();
       case 'task-management':
         return renderTaskManagementModule();
       case 'gantt':
         return renderGanttModule();
-      case 'team-collaboration':
-        return renderTeamModule();
-      case 'integrations':
-        return renderIntegrationsModule();
-      case 'settings':
-        return renderSettingsModule();
       default:
-        return renderDashboardModule();
+        return renderProjectCenterModule();
     }
   };
 
@@ -1261,15 +1356,17 @@ const App: React.FC = () => {
         <div className="app-sidebar-top">
           <div className="app-brand-mark">◈</div>
           <div>
-            <span className="app-brand-kicker">project operations platform</span>
-            <h1 className="app-title">项目管理控制台</h1>
+            <span className="app-brand-kicker">workspace</span>
+            <h1 className="app-title">项目管理</h1>
           </div>
         </div>
 
-        <div className="sidebar-summary-card app-sidebar-summary-card">
-          <span className="sidebar-summary-label">当前模块</span>
-          <strong className="sidebar-summary-value">{currentModule.label}</strong>
-          <div className="sidebar-summary-metrics">
+        <div className="sidebar-summary-card app-sidebar-summary-card compact-sidebar-summary">
+          <div className="sidebar-summary-metrics compact">
+            <div>
+              <span>模块</span>
+              <strong>{currentModule.label}</strong>
+            </div>
             <div>
               <span>项目</span>
               <strong>{projects.length}</strong>
@@ -1282,10 +1379,6 @@ const App: React.FC = () => {
         </div>
 
         <nav className="app-sidebar-panel app-nav-panel">
-          <div className="app-nav-header">
-            <span className="sidebar-kicker">Workspace Modules</span>
-            <strong>导航</strong>
-          </div>
           <div className="app-nav-list">
             {APP_MODULES.map((module) => (
               <button
@@ -1325,19 +1418,27 @@ const App: React.FC = () => {
             </div>
           )}
         </div>
+
+        <div className="app-sidebar-user-panel">
+          <span className="app-sidebar-user-name">admin</span>
+          <button
+            type="button"
+            className="btn btn-outline-secondary btn-sm app-sidebar-user-icon"
+            onClick={handleLogoutWithConfirm}
+            aria-label="退出登录"
+            title="退出登录"
+          >
+            ⎋
+          </button>
+        </div>
       </aside>
 
       <div className="app-main-shell">
         <header className="app-topbar">
           <div className="app-topbar-copy app-topbar-copy-extended">
-            <span className="app-topbar-kicker">{currentModule.kicker}</span>
             <h2 className="app-topbar-title">{currentModule.title}</h2>
           </div>
           <div className="app-topbar-actions-shell">
-            <div className="header-actions app-topbar-statuses">
-              <span className="context-pill">{currentContextLabel}</span>
-              <span className="binding-status-pill">微信 {wechatStatusText}</span>
-            </div>
             <div className="header-actions app-topbar-actions-row">
               <button className="btn btn-outline-secondary app-action-button" onClick={handleRefresh}>
                 刷新
@@ -1347,9 +1448,6 @@ const App: React.FC = () => {
                   + 新建任务
                 </button>
               )}
-              <button className="btn btn-outline-secondary app-action-button" onClick={handleLogout}>
-                退出登录
-              </button>
             </div>
           </div>
         </header>
