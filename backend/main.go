@@ -43,19 +43,27 @@ type Project struct {
 }
 
 type Task struct {
-	ID           string   `json:"id"`
-	ProjectID    string   `json:"project_id"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Owner        string   `json:"owner"`
-	StartDate    string   `json:"start_date"`
-	EndDate      string   `json:"end_date"`
-	Progress     int      `json:"progress"`
-	Color        string   `json:"color"`
-	ParentID     *string  `json:"parent_id"`
-	Dependencies []string `json:"dependencies"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
+	ID             string              `json:"id"`
+	ProjectID      string              `json:"project_id"`
+	Name           string              `json:"name"`
+	Description    string              `json:"description"`
+	Owner          string              `json:"owner"`
+	StartDate      string              `json:"start_date"`
+	EndDate        string              `json:"end_date"`
+	Progress       int                 `json:"progress"`
+	Color          string              `json:"color"`
+	ParentID       *string             `json:"parent_id"`
+	Dependencies   []string            `json:"dependencies"`
+	TimelineEvents []TaskTimelineEvent `json:"timeline_events"`
+	CreatedAt      string              `json:"created_at"`
+	UpdatedAt      string              `json:"updated_at"`
+}
+
+type TaskTimelineEvent struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Time   string `json:"time"`
+	Detail string `json:"detail"`
 }
 
 type TaskView struct {
@@ -87,16 +95,21 @@ type projectPayload struct {
 }
 
 type taskPayload struct {
-	ProjectID    string    `json:"project_id"`
-	Name         string    `json:"name"`
-	Description  *string   `json:"description"`
-	Owner        *string   `json:"owner"`
-	StartDate    string    `json:"start_date"`
-	EndDate      string    `json:"end_date"`
-	Progress     *int      `json:"progress"`
-	Color        *string   `json:"color"`
-	ParentID     **string  `json:"parent_id"`
-	Dependencies *[]string `json:"dependencies"`
+	ProjectID      string               `json:"project_id"`
+	Name           string               `json:"name"`
+	Description    *string              `json:"description"`
+	Owner          *string              `json:"owner"`
+	StartDate      string               `json:"start_date"`
+	EndDate        string               `json:"end_date"`
+	Progress       *int                 `json:"progress"`
+	Color          *string              `json:"color"`
+	ParentID       **string             `json:"parent_id"`
+	Dependencies   *[]string            `json:"dependencies"`
+	TimelineEvents *[]TaskTimelineEvent `json:"timeline_events"`
+}
+
+type attachmentAssignPayload struct {
+	TaskID string `json:"task_id"`
 }
 
 type dataFile struct {
@@ -285,6 +298,7 @@ func (s *store) initSchema() error {
 			color TEXT NOT NULL,
 			parent_id TEXT,
 			dependencies TEXT NOT NULL DEFAULT '[]',
+			timeline_events TEXT NOT NULL DEFAULT '[]',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -372,6 +386,9 @@ func (s *store) initSchema() error {
 		return err
 	}
 	if err := s.ensureColumn("tasks", "owner", "ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("tasks", "timeline_events", "ALTER TABLE tasks ADD COLUMN timeline_events TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
 	if err := s.ensureColumn("project_attachments", "task_id", "ALTER TABLE project_attachments ADD COLUMN task_id TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -701,6 +718,49 @@ func (s *store) getProjectAttachment(projectID string, attachmentID string) (Pro
 	return attachment, true, nil
 }
 
+func (s *store) assignProjectAttachment(projectID string, attachmentID string, taskID string) (ProjectAttachment, error) {
+	attachment, ok, err := s.getProjectAttachment(projectID, attachmentID)
+	if err != nil {
+		return ProjectAttachment{}, err
+	}
+	if !ok {
+		return ProjectAttachment{}, os.ErrNotExist
+	}
+
+	trimmedTaskID := strings.TrimSpace(taskID)
+	if trimmedTaskID != "" {
+		task, taskOK := s.getTask(trimmedTaskID)
+		if !taskOK || task.ProjectID != projectID {
+			return ProjectAttachment{}, errors.New("task not found in project")
+		}
+	}
+
+	attachment.TaskID = trimmedTaskID
+	attachment.UpdatedAt = nowISO()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err = s.db.Exec(`
+		UPDATE project_attachments
+		SET task_id = ?, updated_at = ?
+		WHERE id = ? AND project_id = ?
+	`, attachment.TaskID, attachment.UpdatedAt, attachmentID, projectID)
+	if err != nil {
+		return ProjectAttachment{}, err
+	}
+
+	if attachment.TaskID != "" {
+		if task, ok := s.getTask(attachment.TaskID); ok {
+			attachment.TaskName = task.Name
+		}
+	} else {
+		attachment.TaskName = ""
+	}
+
+	return attachment, nil
+}
+
 func (s *store) persistProjectAttachment(projectID string, taskID string, header *multipart.FileHeader, now string, projectDir string) (ProjectAttachment, error) {
 	file, err := header.Open()
 	if err != nil {
@@ -769,19 +829,20 @@ func (s *store) createTask(input taskPayload) (Task, error) {
 
 	now := nowISO()
 	task := Task{
-		ID:           newUUID(),
-		ProjectID:    input.ProjectID,
-		Name:         name,
-		Description:  stringValue(input.Description, ""),
-		Owner:        stringValue(input.Owner, ""),
-		StartDate:    input.StartDate,
-		EndDate:      input.EndDate,
-		Progress:     intValue(input.Progress, 0),
-		Color:        stringValue(input.Color, defaultColor),
-		ParentID:     parentValue(input.ParentID),
-		Dependencies: sliceValue(input.Dependencies),
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             newUUID(),
+		ProjectID:      input.ProjectID,
+		Name:           name,
+		Description:    stringValue(input.Description, ""),
+		Owner:          stringValue(input.Owner, ""),
+		StartDate:      input.StartDate,
+		EndDate:        input.EndDate,
+		Progress:       intValue(input.Progress, 0),
+		Color:          stringValue(input.Color, defaultColor),
+		ParentID:       parentValue(input.ParentID),
+		Dependencies:   sliceValue(input.Dependencies),
+		TimelineEvents: sliceTimelineEvents(input.TimelineEvents),
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	s.mu.Lock()
@@ -800,14 +861,18 @@ func (s *store) createTask(input taskPayload) (Task, error) {
 		if err != nil {
 			return err
 		}
+		timelineEventsJSON, err := encodeTimelineEvents(task.TimelineEvents)
+		if err != nil {
+			return err
+		}
 
 		_, err = tx.Exec(`
 			INSERT INTO tasks (
 				id, project_id, name, description, owner, start_date, end_date,
-				progress, color, parent_id, dependencies, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				progress, color, parent_id, dependencies, timeline_events, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, task.ID, task.ProjectID, task.Name, task.Description, task.Owner, task.StartDate, task.EndDate,
-			task.Progress, task.Color, task.ParentID, dependenciesJSON, task.CreatedAt, task.UpdatedAt)
+			task.Progress, task.Color, task.ParentID, dependenciesJSON, timelineEventsJSON, task.CreatedAt, task.UpdatedAt)
 		return err
 	}); err != nil {
 		return Task{}, err
@@ -853,6 +918,9 @@ func (s *store) updateTask(id string, input taskPayload) (Task, error) {
 	if input.Dependencies != nil {
 		task.Dependencies = sliceValue(input.Dependencies)
 	}
+	if input.TimelineEvents != nil {
+		task.TimelineEvents = sliceTimelineEvents(input.TimelineEvents)
+	}
 	if task.StartDate > task.EndDate {
 		return Task{}, errors.New("start_date cannot be later than end_date")
 	}
@@ -865,6 +933,10 @@ func (s *store) updateTask(id string, input taskPayload) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
+	timelineEventsJSON, err := encodeTimelineEvents(task.TimelineEvents)
+	if err != nil {
+		return Task{}, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -872,10 +944,10 @@ func (s *store) updateTask(id string, input taskPayload) (Task, error) {
 	_, err = s.db.Exec(`
 		UPDATE tasks
 		SET name = ?, description = ?, owner = ?, start_date = ?, end_date = ?, progress = ?,
-			color = ?, parent_id = ?, dependencies = ?, updated_at = ?
+			color = ?, parent_id = ?, dependencies = ?, timeline_events = ?, updated_at = ?
 		WHERE id = ?
 	`, task.Name, task.Description, task.Owner, task.StartDate, task.EndDate, task.Progress,
-		task.Color, task.ParentID, dependenciesJSON, task.UpdatedAt, id)
+		task.Color, task.ParentID, dependenciesJSON, timelineEventsJSON, task.UpdatedAt, id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -1953,6 +2025,25 @@ func (s *server) handleProjectAttachments(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if action == "assign" && len(parts) == 3 && r.Method == http.MethodPatch {
+		var input attachmentAssignPayload
+		if err := decodeJSON(r, &input); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		attachment, err := s.store.assignProjectAttachment(projectID, parts[2], input.TaskID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				writeError(w, http.StatusNotFound, "attachment not found")
+				return
+			}
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, attachment)
+		return
+	}
+
 	if action == "download" && len(parts) == 3 && r.Method == http.MethodGet {
 		attachment, ok, err := s.store.getProjectAttachment(projectID, parts[2])
 		if err != nil {
@@ -1999,7 +2090,53 @@ func normalizeTask(task Task) Task {
 	if task.Dependencies == nil {
 		task.Dependencies = []string{}
 	}
+	task.TimelineEvents = normalizeTimelineEvents(task.TimelineEvents)
 	return task
+}
+
+func normalizeTimelineEvents(events []TaskTimelineEvent) []TaskTimelineEvent {
+	if events == nil {
+		return []TaskTimelineEvent{}
+	}
+
+	normalized := make([]TaskTimelineEvent, 0, len(events))
+	for _, event := range events {
+		title := strings.TrimSpace(event.Title)
+		detail := strings.TrimSpace(event.Detail)
+		timestamp := strings.TrimSpace(event.Time)
+		if title == "" && detail == "" && timestamp == "" {
+			continue
+		}
+
+		id := strings.TrimSpace(event.ID)
+		if id == "" {
+			id = newUUID()
+		}
+
+		normalized = append(normalized, TaskTimelineEvent{
+			ID:     id,
+			Title:  title,
+			Time:   timestamp,
+			Detail: detail,
+		})
+	}
+
+	sort.SliceStable(normalized, func(i, j int) bool {
+		left := normalized[i].Time
+		right := normalized[j].Time
+		if left == right {
+			return normalized[i].ID < normalized[j].ID
+		}
+		if left == "" {
+			return false
+		}
+		if right == "" {
+			return true
+		}
+		return left < right
+	})
+
+	return normalized
 }
 
 func (s *server) currentWeChatBindingStatus(sessionID string) (wechatBindingStatusResponse, error) {
@@ -2057,8 +2194,8 @@ func maskIdentifier(value string) string {
 func (s *store) queryTaskViews(projectID string) []TaskView {
 	query := `
 		SELECT
-			t.id, t.project_id, t.name, t.description, t.start_date, t.end_date,
-			t.progress, t.color, t.parent_id, t.dependencies, t.created_at, t.updated_at,
+			t.id, t.project_id, t.name, t.description, t.owner, t.start_date, t.end_date,
+			t.progress, t.color, t.parent_id, t.dependencies, t.timeline_events, t.created_at, t.updated_at,
 			p.name, p.color
 		FROM tasks t
 		JOIN projects p ON p.id = t.project_id
@@ -2096,8 +2233,8 @@ func (s *store) queryTaskViews(projectID string) []TaskView {
 func (s *store) queryTask(id string) (Task, error) {
 	row := s.db.QueryRow(`
 		SELECT
-			id, project_id, name, description, start_date, end_date,
-			progress, color, parent_id, dependencies, created_at, updated_at
+			id, project_id, name, description, owner, start_date, end_date,
+			progress, color, parent_id, dependencies, timeline_events, created_at, updated_at
 		FROM tasks
 		WHERE id = ?
 	`, id)
@@ -2162,13 +2299,17 @@ func (s *store) importLegacyJSONIfNeeded() error {
 			if err != nil {
 				return err
 			}
+			timelineEventsJSON, err := encodeTimelineEvents(task.TimelineEvents)
+			if err != nil {
+				return err
+			}
 			if _, err := tx.Exec(`
 				INSERT INTO tasks (
-					id, project_id, name, description, start_date, end_date,
-					progress, color, parent_id, dependencies, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, task.ID, task.ProjectID, task.Name, task.Description, task.StartDate, task.EndDate,
-				task.Progress, task.Color, task.ParentID, dependenciesJSON, task.CreatedAt, task.UpdatedAt); err != nil {
+					id, project_id, name, description, owner, start_date, end_date,
+					progress, color, parent_id, dependencies, timeline_events, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, task.ID, task.ProjectID, task.Name, task.Description, task.Owner, task.StartDate, task.EndDate,
+				task.Progress, task.Color, task.ParentID, dependenciesJSON, timelineEventsJSON, task.CreatedAt, task.UpdatedAt); err != nil {
 				return err
 			}
 		}
@@ -2209,9 +2350,10 @@ type rowScanner interface {
 
 func scanTask(scanner rowScanner) (Task, error) {
 	var (
-		task             Task
-		parentID         sql.NullString
-		dependenciesJSON string
+		task               Task
+		parentID           sql.NullString
+		dependenciesJSON   string
+		timelineEventsJSON string
 	)
 
 	err := scanner.Scan(
@@ -2219,12 +2361,14 @@ func scanTask(scanner rowScanner) (Task, error) {
 		&task.ProjectID,
 		&task.Name,
 		&task.Description,
+		&task.Owner,
 		&task.StartDate,
 		&task.EndDate,
 		&task.Progress,
 		&task.Color,
 		&parentID,
 		&dependenciesJSON,
+		&timelineEventsJSON,
 		&task.CreatedAt,
 		&task.UpdatedAt,
 	)
@@ -2236,16 +2380,18 @@ func scanTask(scanner rowScanner) (Task, error) {
 		task.ParentID = &parentID.String
 	}
 	task.Dependencies = decodeDependencies(dependenciesJSON)
+	task.TimelineEvents = decodeTimelineEvents(timelineEventsJSON)
 	return normalizeTask(task), nil
 }
 
 func scanTaskView(scanner rowScanner) (TaskView, error) {
 	var (
-		task             Task
-		parentID         sql.NullString
-		dependenciesJSON string
-		projectName      string
-		projectColor     string
+		task               Task
+		parentID           sql.NullString
+		dependenciesJSON   string
+		timelineEventsJSON string
+		projectName        string
+		projectColor       string
 	)
 
 	err := scanner.Scan(
@@ -2253,12 +2399,14 @@ func scanTaskView(scanner rowScanner) (TaskView, error) {
 		&task.ProjectID,
 		&task.Name,
 		&task.Description,
+		&task.Owner,
 		&task.StartDate,
 		&task.EndDate,
 		&task.Progress,
 		&task.Color,
 		&parentID,
 		&dependenciesJSON,
+		&timelineEventsJSON,
 		&task.CreatedAt,
 		&task.UpdatedAt,
 		&projectName,
@@ -2272,6 +2420,7 @@ func scanTaskView(scanner rowScanner) (TaskView, error) {
 		task.ParentID = &parentID.String
 	}
 	task.Dependencies = decodeDependencies(dependenciesJSON)
+	task.TimelineEvents = decodeTimelineEvents(timelineEventsJSON)
 
 	return TaskView{
 		Task:         normalizeTask(task),
@@ -2299,6 +2448,17 @@ func encodeDependencies(value []string) (string, error) {
 	return string(body), nil
 }
 
+func encodeTimelineEvents(value []TaskTimelineEvent) (string, error) {
+	if value == nil {
+		value = []TaskTimelineEvent{}
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
 func decodeDependencies(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return []string{}
@@ -2311,6 +2471,20 @@ func decodeDependencies(raw string) []string {
 		return []string{}
 	}
 	return value
+}
+
+func decodeTimelineEvents(raw string) []TaskTimelineEvent {
+	if strings.TrimSpace(raw) == "" {
+		return []TaskTimelineEvent{}
+	}
+	var value []TaskTimelineEvent
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return []TaskTimelineEvent{}
+	}
+	if value == nil {
+		return []TaskTimelineEvent{}
+	}
+	return normalizeTimelineEvents(value)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -2339,7 +2513,7 @@ func decodeJSON(r *http.Request, target any) error {
 
 func setCORSHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", envOr("CORS_ALLOW_ORIGIN", "http://localhost:3000"))
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 }
@@ -2427,6 +2601,13 @@ func sliceValue(value *[]string) []string {
 		return []string{}
 	}
 	return append([]string{}, (*value)...)
+}
+
+func sliceTimelineEvents(value *[]TaskTimelineEvent) []TaskTimelineEvent {
+	if value == nil {
+		return []TaskTimelineEvent{}
+	}
+	return normalizeTimelineEvents(append([]TaskTimelineEvent{}, (*value)...))
 }
 
 func parentValue(value **string) *string {

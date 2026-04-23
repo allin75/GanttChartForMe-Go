@@ -5,6 +5,8 @@ import ProjectList from './components/ProjectList';
 import GanttChart from './components/GanttChart';
 import TaskModal from './components/TaskModal';
 import AuthScreen from './components/AuthScreen';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './App.css';
 
@@ -1217,7 +1219,15 @@ const App: React.FC = () => {
                   <div className="task-board-header">
                     <div>
                       <h4>{task.name}</h4>
-                      <p>{task.description || '-'}</p>
+                      <div className="task-markdown-preview">
+                        {task.description ? (
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {task.description}
+                          </ReactMarkdown>
+                        ) : (
+                          <p>-</p>
+                        )}
+                      </div>
                     </div>
                     <button className="btn btn-outline-secondary btn-sm app-action-button" onClick={() => handleTaskClick(task)}>
                       编辑

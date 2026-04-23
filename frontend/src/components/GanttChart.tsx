@@ -40,6 +40,14 @@ interface DragPreview {
   width: number;
 }
 
+const plainTextFromMarkdown = (value: string) =>
+  value
+    .replace(/!\[[^\]]*]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)]\([^)]*\)/g, '$1')
+    .replace(/[`*_>#-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
 const VIEW_MODE_LABELS: Record<ViewMode, string> = {
   day: '日',
   week: '周',
@@ -607,7 +615,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ tasks, onTaskUpdate, onTaskClic
           {hoveredTask.description && (
             <div className="tooltip-row">
               <span className="tooltip-label">描述:</span>
-              <span>{hoveredTask.description}</span>
+              <span>{plainTextFromMarkdown(hoveredTask.description)}</span>
             </div>
           )}
           {showProjectName && hoveredTask.project_name && (

@@ -21,10 +21,18 @@ export interface Task {
   color: string;
   parent_id: string | null;
   dependencies: string[];
+  timeline_events: TaskTimelineEvent[];
   created_at: string;
   updated_at: string;
   project_name?: string;
   project_color?: string;
+}
+
+export interface TaskTimelineEvent {
+  id: string;
+  title: string;
+  time: string;
+  detail: string;
 }
 
 export interface ProjectAttachment {
@@ -68,6 +76,7 @@ export interface CreateTaskDto {
   color?: string;
   parent_id?: string;
   dependencies?: string[];
+  timeline_events?: TaskTimelineEvent[];
 }
 
 export interface UpdateTaskDto {
@@ -80,6 +89,7 @@ export interface UpdateTaskDto {
   color?: string;
   parent_id?: string;
   dependencies?: string[];
+  timeline_events?: TaskTimelineEvent[];
 }
 
 export interface AuthStatus {
